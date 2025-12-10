@@ -1,3 +1,5 @@
+package com.lss;
+
 import java.util.*;
 
 public class AdfDeltaConverter {
@@ -24,8 +26,7 @@ public class AdfDeltaConverter {
 
             if (insertObj instanceof String) {
                 String s = (String) insertObj;
-                String[] parts = s.split("
-", -1);
+                String[] parts = s.split("\n", -1);
                 for (int p = 0; p < parts.length; p++) {
                     String part = parts[p];
                     // append segment with current op attrs
@@ -78,8 +79,7 @@ public class AdfDeltaConverter {
                             Map<String, Object> nextOp = ops.get(i + 1);
                             Object nextInsert = nextOp.get("insert");
                             Map<String, Object> nextAttrs = (Map<String, Object>) nextOp.get("attributes");
-                            if (nextInsert instanceof String && "
-".equals(nextInsert) && nextAttrs != null && !nextAttrs.isEmpty()) {
+                            if (nextInsert instanceof String && "\n".equals(nextInsert) && nextAttrs != null && !nextAttrs.isEmpty()) {
                                 // apply nextAttrs to this finalized line
                                 Map<String, Object> paragraph = makeParagraphNodeFromSegments(lineSegments);
                                 Map<String, Object> lineAttrs = nextAttrs;
@@ -310,8 +310,7 @@ public class AdfDeltaConverter {
                     }
                 }
                 Map<String, Object> newline = new HashMap<String, Object>();
-                newline.put("insert", "
-");
+                newline.put("insert", "\n");
                 ops.add(newline);
             } else if ("orderedList".equals(type) || "bulletList".equals(type)) {
                 String listType = "orderedList".equals(type) ? "ordered" : "bullet";
@@ -336,8 +335,7 @@ public class AdfDeltaConverter {
                             }
                         }
                         Map<String, Object> newline = new HashMap<String, Object>();
-                        newline.put("insert", "
-");
+                        newline.put("insert", "\n");
                         Map<String, Object> attr = new HashMap<String, Object>();
                         attr.put("list", listType);
                         newline.put("attributes", attr);
@@ -422,18 +420,16 @@ public class AdfDeltaConverter {
         for (int i = 0; i < s.length(); i++) {
             char c = s.charAt(i);
             switch (c) {
-                case '\': sb.append("\\"); break;
-                case '"': sb.append("\\""); break;
-                case '': sb.append("\b"); break;
-                case '': sb.append("\f"); break;
-                case '
-': sb.append("\n"); break;
-                case '
-': sb.append("\r"); break;
-                case '	': sb.append("\t"); break;
+                case '\\': sb.append("\\\\"); break;
+                case '"': sb.append("\\\""); break;
+                case '\b': sb.append("\\b"); break;
+                case '\f': sb.append("\\f"); break;
+                case '\n': sb.append("\\n"); break;
+                case '\r': sb.append("\\r"); break;
+                case '\t': sb.append("\\t"); break;
                 default:
                     if (c < 32) {
-                        sb.append(String.format("\u%04x", (int) c));
+                        sb.append(String.format("\\u%04x", (int) c));
                     } else {
                         sb.append(c);
                     }
@@ -447,33 +443,25 @@ public class AdfDeltaConverter {
         List<Map<String, Object>> ops = new ArrayList<Map<String, Object>>();
 
         // text: aaa
-        ops.add(new HashMap<String, Object>() {{ put("insert", "aaa
-AAA"); }});
+        ops.add(new HashMap<String, Object>() {{ put("insert", "aaa\nAAA"); }});
         // ordered list newline applies to previous line
-        ops.add(new HashMap<String, Object>() {{ put("insert", "
-"); put("attributes", new HashMap<String, Object>() {{ put("list", "ordered"); }}); }});
+        ops.add(new HashMap<String, Object>() {{ put("insert", "\n"); put("attributes", new HashMap<String, Object>() {{ put("list", "ordered"); }}); }});
         // next list item text with bold attribute
         ops.add(new HashMap<String, Object>() {{ put("insert", "BBB"); put("attributes", new HashMap<String, Object>() {{ put("bold", true); }}); }});
-        ops.add(new HashMap<String, Object>() {{ put("insert", "
-"); put("attributes", new HashMap<String, Object>() {{ put("list", "ordered"); }}); }});
+        ops.add(new HashMap<String, Object>() {{ put("insert", "\n"); put("attributes", new HashMap<String, Object>() {{ put("list", "ordered"); }}); }});
         // paragraph bbb
-        ops.add(new HashMap<String, Object>() {{ put("insert", "bbb
-"); }});
+        ops.add(new HashMap<String, Object>() {{ put("insert", "bbb\n"); }});
         // bullet list AAA with italic
         ops.add(new HashMap<String, Object>() {{ put("insert", "AAA"); put("attributes", new HashMap<String, Object>() {{ put("italic", true); }}); }});
-        ops.add(new HashMap<String, Object>() {{ put("insert", "
-"); put("attributes", new HashMap<String, Object>() {{ put("list", "bullet"); }}); }});
+        ops.add(new HashMap<String, Object>() {{ put("insert", "\n"); put("attributes", new HashMap<String, Object>() {{ put("list", "bullet"); }}); }});
         // bullet BBB with color
         ops.add(new HashMap<String, Object>() {{ put("insert", "BBB"); put("attributes", new HashMap<String, Object>() {{ put("color", "#ff0000"); }}); }});
-        ops.add(new HashMap<String, Object>() {{ put("insert", "
-"); put("attributes", new HashMap<String, Object>() {{ put("list", "bullet"); }}); }});
+        ops.add(new HashMap<String, Object>() {{ put("insert", "\n"); put("attributes", new HashMap<String, Object>() {{ put("list", "bullet"); }}); }});
         // bullet CCC with link
         ops.add(new HashMap<String, Object>() {{ put("insert", "CCC"); put("attributes", new HashMap<String, Object>() {{ put("link", "https://example.com"); }}); }});
-        ops.add(new HashMap<String, Object>() {{ put("insert", "
-"); put("attributes", new HashMap<String, Object>() {{ put("list", "bullet"); }}); }});
+        ops.add(new HashMap<String, Object>() {{ put("insert", "\n"); put("attributes", new HashMap<String, Object>() {{ put("list", "bullet"); }}); }});
         // trailing paragraph
-        ops.add(new HashMap<String, Object>() {{ put("insert", "ccc
-"); }});
+        ops.add(new HashMap<String, Object>() {{ put("insert", "ccc\n"); }});
 
         Map<String, Object> delta = new HashMap<String, Object>();
         delta.put("ops", ops);
