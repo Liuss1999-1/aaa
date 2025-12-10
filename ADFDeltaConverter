@@ -1,16 +1,11 @@
-package com.lss;
-
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-
-import java.util.*;
-
 import java.util.*;
 
 public class AdfDeltaConverter {
 
+    /**
+     * Delta -> ADF
+     * 支持 inline attributes -> ADF marks（bold/italic/underline/strike/color/link）
+     */
     public static Map<String, Object> deltaToAdf(Map<String, Object> delta) {
         List<Map<String, Object>> ops = (List<Map<String, Object>>) delta.get("ops");
         Map<String, Object> adf = new HashMap<String, Object>();
@@ -20,7 +15,7 @@ public class AdfDeltaConverter {
 
         String currentListType = null; // "ordered" or "bullet"
         List<Map<String, Object>> listBuffer = new ArrayList<Map<String, Object>>();
-        StringBuilder lineBuffer = new StringBuilder();
+        List<Map<String, Object>> lineSegments = new ArrayList<Map<String, Object>>(); // each segment: {text:..., attrs:...}
 
         for (int i = 0; i < ops.size(); i++) {
             Map<String, Object> op = ops.get(i);
@@ -29,20 +24,28 @@ public class AdfDeltaConverter {
 
             if (insertObj instanceof String) {
                 String s = (String) insertObj;
-                // split keeping trailing empty
-                String[] parts = s.split("\n", -1);
+                String[] parts = s.split("
+", -1);
                 for (int p = 0; p < parts.length; p++) {
                     String part = parts[p];
-                    lineBuffer.append(part);
-                    boolean isLastPart = (p == parts.length - 1);
+                    // append segment with current op attrs
+                    Map<String, Object> seg = new HashMap<String, Object>();
+                    seg.put("text", part);
+                    if (attrs != null && !attrs.isEmpty()) {
+                        seg.put("attrs", attrs);
+                    } else {
+                        seg.put("attrs", null);
+                    }
+                    lineSegments.add(seg);
+
                     boolean hasInternalNewline = (p < parts.length - 1);
+                    boolean isLastPart = (p == parts.length - 1);
 
                     if (hasInternalNewline) {
-                        // finalize this internal line -> internal newlines usually have NO separate attrs
-                        String lineText = lineBuffer.toString();
-                        Map<String, Object> paragraph = makeParagraphNode(lineText);
+                        // finalize this internal line (no separate standalone newline will be inspected here)
+                        Map<String, Object> paragraph = makeParagraphNodeFromSegments(lineSegments);
 
-                        // If current op itself has attrs that are line-level, apply them (rare).
+                        // If current op has line-level attrs (rare), apply
                         Map<String, Object> lineAttrs = (attrs != null && attrs.containsKey("list")) ? attrs : null;
 
                         if (lineAttrs != null && lineAttrs.get("list") != null) {
@@ -66,21 +69,19 @@ public class AdfDeltaConverter {
                             content.add(paragraph);
                         }
 
-                        lineBuffer.setLength(0);
+                        lineSegments = new ArrayList<Map<String, Object>>();
                     }
 
                     if (isLastPart) {
-                        // This is the last part of this text op.
-                        // It may be followed by a separate "\n" op that carries line attributes
+                        // check for standalone newline op after this text part
                         if (i + 1 < ops.size()) {
                             Map<String, Object> nextOp = ops.get(i + 1);
                             Object nextInsert = nextOp.get("insert");
                             Map<String, Object> nextAttrs = (Map<String, Object>) nextOp.get("attributes");
-                            if (nextInsert instanceof String && "\n".equals(nextInsert) && nextAttrs != null && !nextAttrs.isEmpty()) {
-                                // The standalone newline applies to this last part -> consume next op
-                                String lineText = lineBuffer.toString();
-                                Map<String, Object> paragraph = makeParagraphNode(lineText);
-
+                            if (nextInsert instanceof String && "
+".equals(nextInsert) && nextAttrs != null && !nextAttrs.isEmpty()) {
+                                // apply nextAttrs to this finalized line
+                                Map<String, Object> paragraph = makeParagraphNodeFromSegments(lineSegments);
                                 Map<String, Object> lineAttrs = nextAttrs;
 
                                 if (lineAttrs.get("list") != null) {
@@ -104,39 +105,32 @@ public class AdfDeltaConverter {
                                     content.add(paragraph);
                                 }
 
-                                lineBuffer.setLength(0);
-                                // consume the next op (the standalone newline)
+                                // consume the standalone newline op
                                 i++;
-                                // done handling last part
+                                lineSegments = new ArrayList<Map<String, Object>>();
                                 continue;
                             }
                         }
-
-                        // Else: no standalone newline with attrs after this part.
-                        // Do not finalize yet unless this text op itself ended with a newline (it didn't),
-                        // so we leave lineBuffer as is to accumulate more text or next ops.
-                        // However if this text op itself ended with a trailing empty string (i.e., s ended with '\n')
-                        // then parts will have trailing empty and we'd have handled it as hasInternalNewline earlier.
+                        // otherwise keep segments (no line-level newline yet) to allow further ops to append
                     }
                 }
             } else if (insertObj instanceof Map) {
-                // embedded object like image: treat as a mediaSingle paragraph
+                // embedded object like image
                 Map<String, Object> embed = (Map<String, Object>) insertObj;
                 if (embed.containsKey("image")) {
                     String url = String.valueOf(embed.get("image"));
                     Map<String, Object> mediaSingle = makeMediaSingleNode(url);
-                    // flush any pending lineBuffer as paragraph
-                    if (lineBuffer.length() > 0) {
-                        Map<String, Object> paragraph = makeParagraphNode(lineBuffer.toString());
+                    // flush pending segments
+                    if (!lineSegments.isEmpty()) {
+                        Map<String, Object> paragraph = makeParagraphNodeFromSegments(lineSegments);
                         if (currentListType != null && !listBuffer.isEmpty()) {
                             content.add(makeListNode(currentListType, listBuffer));
                             listBuffer = new ArrayList<Map<String, Object>>();
                             currentListType = null;
                         }
                         content.add(paragraph);
-                        lineBuffer.setLength(0);
+                        lineSegments = new ArrayList<Map<String, Object>>();
                     }
-                    // flush any pending list
                     if (currentListType != null && !listBuffer.isEmpty()) {
                         content.add(makeListNode(currentListType, listBuffer));
                         listBuffer = new ArrayList<Map<String, Object>>();
@@ -147,16 +141,15 @@ public class AdfDeltaConverter {
             }
         }
 
-        // If there's any remaining lineBuffer (text without trailing newline), treat as paragraph.
-        if (lineBuffer.length() > 0) {
-            Map<String, Object> paragraph = makeParagraphNode(lineBuffer.toString());
+        // flush remaining segments as paragraph
+        if (!lineSegments.isEmpty()) {
+            Map<String, Object> paragraph = makeParagraphNodeFromSegments(lineSegments);
             if (currentListType != null && !listBuffer.isEmpty()) {
                 content.add(makeListNode(currentListType, listBuffer));
                 listBuffer = new ArrayList<Map<String, Object>>();
                 currentListType = null;
             }
             content.add(paragraph);
-            lineBuffer.setLength(0);
         }
 
         // flush any remaining list
@@ -166,6 +159,73 @@ public class AdfDeltaConverter {
 
         adf.put("content", content);
         return adf;
+    }
+
+    // helper: build paragraph node from segments (each segment: {text, attrs})
+    private static Map<String, Object> makeParagraphNodeFromSegments(List<Map<String, Object>> segments) {
+        Map<String, Object> paragraph = new HashMap<String, Object>();
+        paragraph.put("type", "paragraph");
+        List<Map<String, Object>> inner = new ArrayList<Map<String, Object>>();
+        for (Map<String, Object> seg : segments) {
+            String txt = (String) seg.get("text");
+            @SuppressWarnings("unchecked")
+            Map<String, Object> segAttrs = (Map<String, Object>) seg.get("attrs");
+            if (txt != null && txt.length() > 0) {
+                Map<String, Object> textNode = new HashMap<String, Object>();
+                textNode.put("type", "text");
+                textNode.put("text", txt);
+                List<Map<String, Object>> marks = deltaAttrsToAdfMarks(segAttrs);
+                if (marks != null && !marks.isEmpty()) {
+                    textNode.put("marks", marks);
+                }
+                inner.add(textNode);
+            }
+        }
+        // ensure at least one empty text node if paragraph empty
+        if (inner.isEmpty()) {
+            Map<String, Object> textNode = new HashMap<String, Object>();
+            textNode.put("type", "text");
+            textNode.put("text", "");
+            inner.add(textNode);
+        }
+        paragraph.put("content", inner);
+        return paragraph;
+    }
+
+    // convert delta attrs (bold/italic/underline/strike/color/link) to ADF marks
+    private static List<Map<String, Object>> deltaAttrsToAdfMarks(Map<String, Object> attrs) {
+        List<Map<String, Object>> marks = new ArrayList<Map<String, Object>>();
+        if (attrs == null) return marks;
+        if (attrs.get("bold") != null && Boolean.TRUE.equals(attrs.get("bold"))) {
+            marks.add(markOf("strong", null));
+        }
+        if (attrs.get("italic") != null && Boolean.TRUE.equals(attrs.get("italic"))) {
+            marks.add(markOf("em", null));
+        }
+        if (attrs.get("underline") != null && Boolean.TRUE.equals(attrs.get("underline"))) {
+            marks.add(markOf("underline", null));
+        }
+        if (attrs.get("strike") != null && Boolean.TRUE.equals(attrs.get("strike"))) {
+            marks.add(markOf("strike", null));
+        }
+        if (attrs.get("color") != null) {
+            Map<String, Object> a = new HashMap<String, Object>();
+            a.put("color", String.valueOf(attrs.get("color")));
+            marks.add(markOf("textColor", a));
+        }
+        if (attrs.get("link") != null) {
+            Map<String, Object> a = new HashMap<String, Object>();
+            a.put("href", String.valueOf(attrs.get("link")));
+            marks.add(markOf("link", a));
+        }
+        return marks;
+    }
+
+    private static Map<String, Object> markOf(String type, Map<String, Object> attrs) {
+        Map<String, Object> m = new HashMap<String, Object>();
+        m.put("type", type);
+        if (attrs != null) m.put("attrs", attrs);
+        return m;
     }
 
     private static Map<String, Object> makeParagraphNode(String text) {
@@ -221,6 +281,10 @@ public class AdfDeltaConverter {
         return mediaSingle;
     }
 
+    /**
+     * ADF -> Delta
+     * 支持把 ADF marks 转为 Delta attributes
+     */
     public static Map<String, Object> adfToDelta(Map<String, Object> adf) {
         List<Map<String, Object>> content = (List<Map<String, Object>>) adf.get("content");
         List<Map<String, Object>> ops = new ArrayList<Map<String, Object>>();
@@ -229,15 +293,26 @@ public class AdfDeltaConverter {
             String type = String.valueOf(node.get("type"));
             if ("paragraph".equals(type)) {
                 List<Map<String, Object>> inner = (List<Map<String, Object>>) node.get("content");
-                StringBuilder sb = new StringBuilder();
+                // each text node may have marks -> produce op(s)
                 for (Map<String, Object> t : inner) {
                     if ("text".equals(String.valueOf(t.get("type")))) {
-                        sb.append(String.valueOf(t.get("text")));
+                        String txt = String.valueOf(t.get("text"));
+                        Map<String, Object> op = new HashMap<String, Object>();
+                        op.put("insert", txt);
+                        // convert marks to attributes
+                        @SuppressWarnings("unchecked")
+                        List<Map<String, Object>> marks = (List<Map<String, Object>>) t.get("marks");
+                        Map<String, Object> attrs = adfMarksToDeltaAttrs(marks);
+                        if (attrs != null && !attrs.isEmpty()) {
+                            op.put("attributes", attrs);
+                        }
+                        ops.add(op);
                     }
                 }
-                Map<String, Object> op = new HashMap<String, Object>();
-                op.put("insert", sb.toString() + "\n");
-                ops.add(op);
+                Map<String, Object> newline = new HashMap<String, Object>();
+                newline.put("insert", "
+");
+                ops.add(newline);
             } else if ("orderedList".equals(type) || "bulletList".equals(type)) {
                 String listType = "orderedList".equals(type) ? "ordered" : "bullet";
                 List<Map<String, Object>> items = (List<Map<String, Object>>) node.get("content");
@@ -246,17 +321,23 @@ public class AdfDeltaConverter {
                     if (itemContent != null && !itemContent.isEmpty()) {
                         Map<String, Object> paragraph = itemContent.get(0);
                         List<Map<String, Object>> inner = (List<Map<String, Object>>) paragraph.get("content");
-                        StringBuilder sb = new StringBuilder();
                         for (Map<String, Object> t : inner) {
                             if ("text".equals(String.valueOf(t.get("type")))) {
-                                sb.append(String.valueOf(t.get("text")));
+                                String txt = String.valueOf(t.get("text"));
+                                Map<String, Object> opText = new HashMap<String, Object>();
+                                opText.put("insert", txt);
+                                @SuppressWarnings("unchecked")
+                                List<Map<String, Object>> marks = (List<Map<String, Object>>) t.get("marks");
+                                Map<String, Object> attrs = adfMarksToDeltaAttrs(marks);
+                                if (attrs != null && !attrs.isEmpty()) {
+                                    opText.put("attributes", attrs);
+                                }
+                                ops.add(opText);
                             }
                         }
-                        Map<String, Object> opText = new HashMap<String, Object>();
-                        opText.put("insert", sb.toString());
-                        ops.add(opText);
                         Map<String, Object> newline = new HashMap<String, Object>();
-                        newline.put("insert", "\n");
+                        newline.put("insert", "
+");
                         Map<String, Object> attr = new HashMap<String, Object>();
                         attr.put("list", listType);
                         newline.put("attributes", attr);
@@ -270,7 +351,6 @@ public class AdfDeltaConverter {
                     if (attrs != null) {
                         String url = (String) attrs.get("url");
                         if (url == null && attrs.get("id") != null) {
-                            // hypothetical attachment URL construction
                             url = "/rest/api/3/attachments/" + attrs.get("id") + "/data";
                         }
                         Map<String, Object> embed = new HashMap<String, Object>();
@@ -288,10 +368,27 @@ public class AdfDeltaConverter {
         return delta;
     }
 
-    // simple JSON serializer for Maps/Lists/Strings/Numbers/Booleans/null
+    // convert ADF marks list -> Quill delta attributes
+    private static Map<String, Object> adfMarksToDeltaAttrs(List<Map<String, Object>> marks) {
+        Map<String, Object> attrs = new HashMap<String, Object>();
+        if (marks == null) return attrs;
+        for (Map<String, Object> m : marks) {
+            String type = String.valueOf(m.get("type"));
+            Map<String, Object> mAttrs = (Map<String, Object>) m.get("attrs");
+            if ("strong".equals(type)) attrs.put("bold", true);
+            else if ("em".equals(type)) attrs.put("italic", true);
+            else if ("underline".equals(type)) attrs.put("underline", true);
+            else if ("strike".equals(type)) attrs.put("strike", true);
+            else if ("textColor".equals(type) && mAttrs != null && mAttrs.get("color") != null) attrs.put("color", String.valueOf(mAttrs.get("color")));
+            else if ("link".equals(type) && mAttrs != null && mAttrs.get("href") != null) attrs.put("link", String.valueOf(mAttrs.get("href")));
+        }
+        return attrs;
+    }
+
+    // JSON serializer
     private static String toJson(Object obj) {
         if (obj == null) return "null";
-        if (obj instanceof String) return '\"' + escape((String) obj) + '\"';
+        if (obj instanceof String) return '"' + escape((String) obj) + '"';
         if (obj instanceof Number || obj instanceof Boolean) return String.valueOf(obj);
         if (obj instanceof Map) {
             StringBuilder sb = new StringBuilder();
@@ -317,8 +414,7 @@ public class AdfDeltaConverter {
             sb.append(']');
             return sb.toString();
         }
-        // fallback
-        return '\"' + escape(String.valueOf(obj)) + '\"';
+        return '"' + escape(String.valueOf(obj)) + '"';
     }
 
     private static String escape(String s) {
@@ -326,16 +422,18 @@ public class AdfDeltaConverter {
         for (int i = 0; i < s.length(); i++) {
             char c = s.charAt(i);
             switch (c) {
-                case '\\': sb.append("\\\\"); break;
-                case '\"': sb.append("\\\""); break;
-                case '\b': sb.append("\\b"); break;
-                case '\f': sb.append("\\f"); break;
-                case '\n': sb.append("\\n"); break;
-                case '\r': sb.append("\\r"); break;
-                case '\t': sb.append("\\t"); break;
+                case '\': sb.append("\\"); break;
+                case '"': sb.append("\\""); break;
+                case '': sb.append("\b"); break;
+                case '': sb.append("\f"); break;
+                case '
+': sb.append("\n"); break;
+                case '
+': sb.append("\r"); break;
+                case '	': sb.append("\t"); break;
                 default:
                     if (c < 32) {
-                        sb.append(String.format("\\u%04x", (int) c));
+                        sb.append(String.format("\u%04x", (int) c));
                     } else {
                         sb.append(c);
                     }
@@ -344,22 +442,38 @@ public class AdfDeltaConverter {
         return sb.toString();
     }
 
-    // Test using the provided data structures, print JSON
+    // Test: include attributes in some segments to validate marks mapping
     public static void main(String[] args) {
         List<Map<String, Object>> ops = new ArrayList<Map<String, Object>>();
 
-        // Build ops according to user's provided delta
-        ops.add(new HashMap<String, Object>() {{ put("insert", "aaa\nAAA"); }});
-        ops.add(new HashMap<String, Object>() {{ put("insert", "\n"); put("attributes", new HashMap<String, Object>() {{ put("list", "ordered"); }}); }});
-        ops.add(new HashMap<String, Object>() {{ put("insert", "BBB"); }});
-        ops.add(new HashMap<String, Object>() {{ put("insert", "\n"); put("attributes", new HashMap<String, Object>() {{ put("list", "ordered"); }}); }});
-        ops.add(new HashMap<String, Object>() {{ put("insert", "bbb\nAAA"); }});
-        ops.add(new HashMap<String, Object>() {{ put("insert", "\n"); put("attributes", new HashMap<String, Object>() {{ put("list", "bullet"); }}); }});
-        ops.add(new HashMap<String, Object>() {{ put("insert", "BBB"); }});
-        ops.add(new HashMap<String, Object>() {{ put("insert", "\n"); put("attributes", new HashMap<String, Object>() {{ put("list", "bullet"); }}); }});
-        ops.add(new HashMap<String, Object>() {{ put("insert", "CCC"); }});
-        ops.add(new HashMap<String, Object>() {{ put("insert", "\n"); put("attributes", new HashMap<String, Object>() {{ put("list", "bullet"); }}); }});
-        ops.add(new HashMap<String, Object>() {{ put("insert", "ccc\n"); }});
+        // text: aaa
+        ops.add(new HashMap<String, Object>() {{ put("insert", "aaa
+AAA"); }});
+        // ordered list newline applies to previous line
+        ops.add(new HashMap<String, Object>() {{ put("insert", "
+"); put("attributes", new HashMap<String, Object>() {{ put("list", "ordered"); }}); }});
+        // next list item text with bold attribute
+        ops.add(new HashMap<String, Object>() {{ put("insert", "BBB"); put("attributes", new HashMap<String, Object>() {{ put("bold", true); }}); }});
+        ops.add(new HashMap<String, Object>() {{ put("insert", "
+"); put("attributes", new HashMap<String, Object>() {{ put("list", "ordered"); }}); }});
+        // paragraph bbb
+        ops.add(new HashMap<String, Object>() {{ put("insert", "bbb
+"); }});
+        // bullet list AAA with italic
+        ops.add(new HashMap<String, Object>() {{ put("insert", "AAA"); put("attributes", new HashMap<String, Object>() {{ put("italic", true); }}); }});
+        ops.add(new HashMap<String, Object>() {{ put("insert", "
+"); put("attributes", new HashMap<String, Object>() {{ put("list", "bullet"); }}); }});
+        // bullet BBB with color
+        ops.add(new HashMap<String, Object>() {{ put("insert", "BBB"); put("attributes", new HashMap<String, Object>() {{ put("color", "#ff0000"); }}); }});
+        ops.add(new HashMap<String, Object>() {{ put("insert", "
+"); put("attributes", new HashMap<String, Object>() {{ put("list", "bullet"); }}); }});
+        // bullet CCC with link
+        ops.add(new HashMap<String, Object>() {{ put("insert", "CCC"); put("attributes", new HashMap<String, Object>() {{ put("link", "https://example.com"); }}); }});
+        ops.add(new HashMap<String, Object>() {{ put("insert", "
+"); put("attributes", new HashMap<String, Object>() {{ put("list", "bullet"); }}); }});
+        // trailing paragraph
+        ops.add(new HashMap<String, Object>() {{ put("insert", "ccc
+"); }});
 
         Map<String, Object> delta = new HashMap<String, Object>();
         delta.put("ops", ops);
