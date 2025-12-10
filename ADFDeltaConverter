@@ -1,0 +1,216 @@
+public class ADFDeltaConverter {
+    /**
+     * 将Quill Delta格式（Map形式）转换为ADF格式（Map形式）。
+     * @param delta Map表示的Quill Delta，应含"ops"->List<Op>。
+     * @return ADF文档Map（包含version、type、content）。
+     */
+    public static Map<String,Object> deltaToAdf(Map<String,Object> delta) {
+        List<Map<String,Object>> ops = (List<Map<String,Object>>) delta.get("ops");
+        // 初始化ADF根节点
+        Map<String,Object> doc = new HashMap<>();
+        doc.put("version", 1);
+        doc.put("type", "doc");
+        List<Map<String,Object>> content = new ArrayList<>();
+
+        // 当前段落缓冲
+        List<Map<String,Object>> paraContent = new ArrayList<>();
+        Map<String,Object> paragraph = createNode("paragraph", null, paraContent);
+
+        for (Map<String,Object> op : ops) {
+            Object insertVal = op.get("insert");
+            Map<String,Object> attrs = (Map<String,Object>) op.get("attributes");
+            if (insertVal instanceof String) {
+                // 处理文字及换行
+                String text = (String) insertVal;
+                String[] parts = text.split("\\n", -1);
+                for (int i = 0; i < parts.length; i++) {
+                    String part = parts[i];
+                    if (!part.isEmpty()) {
+                        // 创建文本节点并添加至当前段落
+                        Map<String,Object> textNode = createNode("text", null, null);
+                        textNode.put("text", part);
+                        // 根据attrs添加marks（如bold、italic等，此处略）
+                        paraContent.add(textNode);
+                    }
+                    if (i < parts.length - 1) {
+                        // 遇到换行，结束当前段落
+                        content.add(paragraph);
+                        // 如果带列表属性，则构建列表节点并嵌入新段落
+                        if (attrs != null && attrs.containsKey("list")) {
+                            String listType = (String)attrs.get("list");
+                            Map<String,Object> listNode = createListNode(listType);
+                            content.add(listNode);
+                            // 新段落成为列表的第一个项
+                            paraContent = new ArrayList<>();
+                            paragraph = createNode("paragraph", null, paraContent);
+                            // 将新段落设置到listNode的第一个listItem内容中
+                            ((List<Map<String,Object>>) listNode.get("content")).get(0)
+                                .put("content", paraContent);
+                        } else {
+                            // 普通新段落
+                            paraContent = new ArrayList<>();
+                            paragraph = createNode("paragraph", null, paraContent);
+                        }
+                    }
+                }
+            } else if (insertVal instanceof Map) {
+                // 处理嵌入（如图片）
+                Map<String,Object> embed = (Map<String,Object>) insertVal;
+                if (embed.containsKey("image")) {
+                    String imageUrl = (String) embed.get("image");
+                    // 创建mediaSingle节点
+                    Map<String,Object> mediaSingle = new HashMap<>();
+                    mediaSingle.put("type", "mediaSingle");
+                    Map<String,Object> attrsMedia = new HashMap<>();
+                    attrsMedia.put("layout", "center");
+                    mediaSingle.put("attrs", attrsMedia);
+                    // 嵌套media节点
+                    Map<String,Object> media = new HashMap<>();
+                    media.put("type", "media");
+                    Map<String,Object> mediaAttrs = new HashMap<>();
+                    mediaAttrs.put("type", "external"); // 假设外部链接
+                    mediaAttrs.put("url", imageUrl);
+                    media.put("attrs", mediaAttrs);
+                    mediaSingle.put("content", Arrays.asList(media));
+                    content.add(mediaSingle);
+                }
+                // 其它类型的嵌入处理...
+            }
+        }
+        // 最后一个段落未空的情况下加入内容
+        if (!paraContent.isEmpty()) {
+            content.add(paragraph);
+        }
+        doc.put("content", content);
+        return doc;
+    }
+
+    /**
+     * 将ADF文档（Map形式）转换为Quill Delta（Map形式，含"ops"列表）。
+     * @param adfDoc ADF文档Map
+     * @return Quill Delta Map
+     */
+    public static Map<String,Object> adfToDelta(Map<String,Object> adfDoc) {
+        List<Map<String,Object>> content = (List<Map<String,Object>>) adfDoc.get("content");
+        List<Map<String,Object>> ops = new ArrayList<>();
+
+        for (Map<String,Object> node : content) {
+            String type = (String) node.get("type");
+            if ("paragraph".equals(type)) {
+                // 提取段落文本
+                List<Map<String,Object>> inner = (List<Map<String,Object>>) node.get("content");
+                StringBuilder sb = new StringBuilder();
+                for (Map<String,Object> sub : inner) {
+                    if ("text".equals(sub.get("type"))) {
+                        sb.append((String)sub.get("text"));
+                    }
+                }
+                sb.append("\n");
+                Map<String,Object> op = new HashMap<>();
+                op.put("insert", sb.toString());
+                ops.add(op);
+            } else if ("heading".equals(type)) {
+                int level = (int)((Map<String,Object>)node.get("attrs")).get("level");
+                List<Map<String,Object>> inner = (List<Map<String,Object>>) node.get("content");
+                StringBuilder sb = new StringBuilder();
+                for (Map<String,Object> sub : inner) {
+                    if ("text".equals(sub.get("type"))) {
+                        sb.append((String)sub.get("text"));
+                    }
+                }
+                sb.append("\n");
+                Map<String,Object> op = new HashMap<>();
+                op.put("insert", sb.toString());
+                Map<String,Object> attr = new HashMap<>();
+                attr.put("header", level);
+                op.put("attributes", attr);
+                ops.add(op);
+            } else if ("bulletList".equals(type) || "orderedList".equals(type)) {
+                // 处理列表项
+                String listType = "bullet".equals(type) ? "bullet" : "ordered";
+                List<Map<String,Object>> items = (List<Map<String,Object>>) node.get("content");
+                for (Map<String,Object> listItem : items) {
+                    // 假定列表每项只有一个段落
+                    Map<String,Object> para = (Map<String,Object>) ((List<Object>)listItem.get("content")).get(0);
+                    List<Map<String,Object>> inner = (List<Map<String,Object>>) para.get("content");
+                    StringBuilder sb = new StringBuilder();
+                    for (Map<String,Object> sub : inner) {
+                        if ("text".equals(sub.get("type"))) {
+                            sb.append((String)sub.get("text"));
+                        }
+                    }
+                    sb.append("\n");
+                    Map<String,Object> op = new HashMap<>();
+                    op.put("insert", sb.toString());
+                    Map<String,Object> attr = new HashMap<>();
+                    attr.put("list", listType);
+                    op.put("attributes", attr);
+                    ops.add(op);
+                }
+            } else if ("mediaSingle".equals(type) || "mediaGroup".equals(type)) {
+                // 处理媒体节点
+                List<Map<String,Object>> mediaContents = (List<Map<String,Object>>) node.get("content");
+                for (Map<String,Object> media : mediaContents) {
+                    if ("media".equals(media.get("type"))) {
+                        Map<String,Object> attrs = (Map<String,Object>) media.get("attrs");
+                        if (attrs != null) {
+                            if ("file".equals(attrs.get("type"))) {
+                                // 示例：文件类型媒体，构造附件URL
+                                String mediaId = (String) attrs.get("id");
+                                String imageUrl = "/rest/api/3/attachments/" + mediaId + "/data";
+                                Map<String,Object> op = new HashMap<>();
+                                Map<String,Object> insert = new HashMap<>();
+                                insert.put("image", imageUrl);
+                                op.put("insert", insert);
+                                ops.add(op);
+                            } else if ("external".equals(attrs.get("type"))) {
+                                String imageUrl = (String) attrs.get("url");
+                                Map<String,Object> op = new HashMap<>();
+                                Map<String,Object> insert = new HashMap<>();
+                                insert.put("image", imageUrl);
+                                op.put("insert", insert);
+                                ops.add(op);
+                            }
+                        }
+                    }
+                }
+            }
+            // 其它节点类型可按需求追加...
+        }
+
+        Map<String,Object> delta = new HashMap<>();
+        delta.put("ops", ops);
+        return delta;
+    }
+
+    /** 辅助：创建一个ADF节点 */
+    private static Map<String,Object> createNode(String type, Map<String,Object> attrs, List<Map<String,Object>> content) {
+        Map<String,Object> node = new HashMap<>();
+        node.put("type", type);
+        if (attrs != null) node.put("attrs", attrs);
+        if (content != null) node.put("content", content);
+        return node;
+    }
+
+    /** 辅助：创建一个空的列表节点（bullet或ordered）和一个空列表项 */
+    private static Map<String,Object> createListNode(String listType) {
+        Map<String,Object> listNode = new HashMap<>();
+        if ("ordered".equals(listType)) {
+            listNode.put("type", "orderedList");
+            Map<String,Object> attrs = new HashMap<>();
+            attrs.put("order", 1);
+            listNode.put("attrs", attrs);
+        } else {
+            listNode.put("type", "bulletList");
+        }
+        // 初始化一个空的listItem->paragraph结构
+        Map<String,Object> listItem = new HashMap<>();
+        listItem.put("type", "listItem");
+        Map<String,Object> para = new HashMap<>();
+        para.put("type", "paragraph");
+        para.put("content", new ArrayList<Map<String,Object>>());
+        listItem.put("content", Arrays.asList(para));
+        listNode.put("content", new ArrayList<Map<String,Object>>(Arrays.asList(listItem)));
+        return listNode;
+    }
+}
