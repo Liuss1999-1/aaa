@@ -1,4 +1,613 @@
+import java.util.*;
 
+/**
+ * Delta <-> ADF 双向转换（增强版）
+ * Java 1.8 单文件
+ *
+ * 新增/增强支持（双向）：
+ *  - blockquote (引用块)
+ *  - indent (缩进，数字级别)
+ *  - size (字体大小：如 "small","large","huge" 或具体值)
+ *  - background (背景颜色 / highlight)
+ *  - font (字体 family)
+ *  - link（超链接，保留并确保互转）
+ *
+ * 说明（实现假设）：
+ *  - Delta 中 block-level attrs（如 list, blockquote, indent）通常写在单独的 "\n" insert 的 attributes 上。
+ *  - Inline attrs（bold/italic/underline/strike/color/link/size/background/font）出现在文本片段的 attributes 上。
+ *  - 对于 ADF 中没有“标准” mark 的属性（例如字体大小 / 背景色），代码会使用自定义 mark 类型（textSize / background / fontFamily）。
+ *    你可以根据目标平台的 ADF 扩展调整 mark 名称或 attrs 结构。
+ */
+public class AdfDeltaConverter {
+
+    @SuppressWarnings("unchecked")
+    public static Map<String, Object> deltaToAdf(Map<String, Object> delta) {
+        List<Map<String, Object>> ops = (List<Map<String, Object>>) delta.get("ops");
+        Map<String, Object> adf = new HashMap<String, Object>();
+        adf.put("version", 1);
+        adf.put("type", "doc");
+        List<Map<String, Object>> content = new ArrayList<Map<String, Object>>();
+
+        String currentListType = null; // "ordered" or "bullet"
+        List<Map<String, Object>> listBuffer = new ArrayList<Map<String, Object>>();
+        List<Map<String, Object>> lineSegments = new ArrayList<Map<String, Object>>(); // each segment: {text:..., attrs:...}
+
+        for (int i = 0; i < ops.size(); i++) {
+            Map<String, Object> op = ops.get(i);
+            Object insertObj = op.get("insert");
+            Map<String, Object> attrs = (Map<String, Object>) op.get("attributes");
+
+            if (insertObj instanceof String) {
+                String s = (String) insertObj;
+                String[] parts = s.split("\n", -1);
+                for (int p = 0; p < parts.length; p++) {
+                    String part = parts[p];
+                    Map<String, Object> seg = new HashMap<String, Object>();
+                    seg.put("text", part);
+                    if (attrs != null && !attrs.isEmpty()) {
+                        seg.put("attrs", attrs);
+                    } else {
+                        seg.put("attrs", null);
+                    }
+                    lineSegments.add(seg);
+
+                    boolean hasInternalNewline = (p < parts.length - 1);
+                    boolean isLastPart = (p == parts.length - 1);
+
+                    if (hasInternalNewline) {
+                        // finalize line inside same op
+                        Map<String, Object> paragraph = makeParagraphNodeFromSegments(lineSegments);
+
+                        // if this op also carried a list/block attribute, treat as line-level
+                        Map<String, Object> lineAttrs = (attrs != null && (attrs.containsKey("list") || attrs.containsKey("blockquote") || attrs.containsKey("indent"))) ? attrs : null;
+
+                        if (lineAttrs != null && lineAttrs.get("list") != null) {
+                            String listType = String.valueOf(lineAttrs.get("list"));
+                            if (currentListType == null) {
+                                currentListType = listType;
+                                listBuffer = new ArrayList<Map<String, Object>>();
+                            }
+                            if (!listType.equals(currentListType)) {
+                                content.add(makeListNode(currentListType, listBuffer));
+                                listBuffer = new ArrayList<Map<String, Object>>();
+                                currentListType = listType;
+                            }
+                            // apply indent on paragraph if present
+                            if (lineAttrs.get("indent") != null) {
+                                Map<String, Object> pa = new HashMap<String, Object>();
+                                pa.put("indent", ((Number) lineAttrs.get("indent")).intValue());
+                                paragraph.put("attrs", pa);
+                            }
+                            listBuffer.add(makeListItem(paragraph));
+                        } else if (lineAttrs != null && lineAttrs.get("blockquote") != null && Boolean.TRUE.equals(lineAttrs.get("blockquote"))) {
+                            // wrap paragraph into blockquote node
+                            Map<String, Object> quote = new HashMap<String, Object>();
+                            quote.put("type", "blockquote");
+                            List<Map<String, Object>> qcontent = new ArrayList<Map<String, Object>>();
+                            qcontent.add(paragraph);
+                            quote.put("content", qcontent);
+                            if (currentListType != null && !listBuffer.isEmpty()) {
+                                content.add(makeListNode(currentListType, listBuffer));
+                                listBuffer = new ArrayList<Map<String, Object>>();
+                                currentListType = null;
+                            }
+                            content.add(quote);
+                        } else {
+                            // normal paragraph
+                            if (lineAttrs != null && lineAttrs.get("indent") != null) {
+                                Map<String, Object> pa = new HashMap<String, Object>();
+                                pa.put("indent", ((Number) lineAttrs.get("indent")).intValue());
+                                paragraph.put("attrs", pa);
+                            }
+                            if (currentListType != null && !listBuffer.isEmpty()) {
+                                content.add(makeListNode(currentListType, listBuffer));
+                                listBuffer = new ArrayList<Map<String, Object>>();
+                                currentListType = null;
+                            }
+                            content.add(paragraph);
+                        }
+
+                        lineSegments = new ArrayList<Map<String, Object>>();
+                    }
+
+                    if (isLastPart) {
+                        // lookahead for standalone newline op that may carry block-level attrs
+                        if (i + 1 < ops.size()) {
+                            Map<String, Object> nextOp = ops.get(i + 1);
+                            Object nextInsert = nextOp.get("insert");
+                            Map<String, Object> nextAttrs = (Map<String, Object>) nextOp.get("attributes");
+                            if (nextInsert instanceof String && "\n".equals(nextInsert)) {
+                                // if next has attrs -> treat as block-level attrs for this line
+                                if (nextAttrs != null && !nextAttrs.isEmpty()) {
+                                    Map<String, Object> paragraph = makeParagraphNodeFromSegments(lineSegments);
+
+                                    // LIST
+                                    if (nextAttrs.get("list") != null) {
+                                        String listType = String.valueOf(nextAttrs.get("list"));
+                                        if (currentListType == null) {
+                                            currentListType = listType;
+                                            listBuffer = new ArrayList<Map<String, Object>>();
+                                        }
+                                        if (!listType.equals(currentListType)) {
+                                            content.add(makeListNode(currentListType, listBuffer));
+                                            listBuffer = new ArrayList<Map<String, Object>>();
+                                            currentListType = listType;
+                                        }
+                                        if (nextAttrs.get("indent") != null) {
+                                            Map<String, Object> pa = new HashMap<String, Object>();
+                                            pa.put("indent", ((Number) nextAttrs.get("indent")).intValue());
+                                            paragraph.put("attrs", pa);
+                                        }
+                                        listBuffer.add(makeListItem(paragraph));
+                                    }
+                                    // BLOCKQUOTE
+                                    else if (nextAttrs.get("blockquote") != null && Boolean.TRUE.equals(nextAttrs.get("blockquote"))) {
+                                        Map<String, Object> quote = new HashMap<String, Object>();
+                                        quote.put("type", "blockquote");
+                                        List<Map<String, Object>> qcontent = new ArrayList<Map<String, Object>>();
+                                        qcontent.add(paragraph);
+                                        quote.put("content", qcontent);
+                                        if (currentListType != null && !listBuffer.isEmpty()) {
+                                            content.add(makeListNode(currentListType, listBuffer));
+                                            listBuffer = new ArrayList<Map<String, Object>>();
+                                            currentListType = null;
+                                        }
+                                        content.add(quote);
+                                    }
+                                    // other block-level attrs: indent only -> set paragraph attrs
+                                    else {
+                                        if (nextAttrs.get("indent") != null) {
+                                            Map<String, Object> pa = new HashMap<String, Object>();
+                                            pa.put("indent", ((Number) nextAttrs.get("indent")).intValue());
+                                            paragraph.put("attrs", pa);
+                                        }
+                                        if (currentListType != null && !listBuffer.isEmpty()) {
+                                            content.add(makeListNode(currentListType, listBuffer));
+                                            listBuffer = new ArrayList<Map<String, Object>>();
+                                            currentListType = null;
+                                        }
+                                        content.add(paragraph);
+                                    }
+
+                                    // consume the standalone newline op
+                                    i++;
+                                    lineSegments = new ArrayList<Map<String, Object>>();
+                                    continue;
+                                } else {
+                                    // next is a simple newline -> finalize as paragraph
+                                    Map<String, Object> paragraph = makeParagraphNodeFromSegments(lineSegments);
+                                    if (currentListType != null && !listBuffer.isEmpty()) {
+                                        content.add(makeListNode(currentListType, listBuffer));
+                                        listBuffer = new ArrayList<Map<String, Object>>();
+                                        currentListType = null;
+                                    }
+                                    content.add(paragraph);
+                                    i++; // consume newline
+                                    lineSegments = new ArrayList<Map<String, Object>>();
+                                    continue;
+                                }
+                            }
+                        }
+                        // else: no newline yet; keep accumulating segments
+                    }
+                }
+            } else if (insertObj instanceof Map) {
+                // embedded object like image (could be string url or complex map)
+                Map<String, Object> embed = (Map<String, Object>) insertObj;
+                String url = null;
+                if (embed.get("image") instanceof String) {
+                    url = (String) embed.get("image");
+                } else if (embed.get("image") instanceof Map) {
+                    Map<String, Object> im = (Map<String, Object>) embed.get("image");
+                    if (im.get("url") != null) url = String.valueOf(im.get("url"));
+                    else if (im.get("id") != null) url = String.valueOf(im.get("id"));
+                }
+                Map<String, Object> mediaSingle = makeMediaSingleNode(url);
+                // flush pending segments as paragraph
+                if (!lineSegments.isEmpty()) {
+                    Map<String, Object> paragraph = makeParagraphNodeFromSegments(lineSegments);
+                    if (currentListType != null && !listBuffer.isEmpty()) {
+                        content.add(makeListNode(currentListType, listBuffer));
+                        listBuffer = new ArrayList<Map<String, Object>>();
+                        currentListType = null;
+                    }
+                    content.add(paragraph);
+                    lineSegments = new ArrayList<Map<String, Object>>();
+                }
+                if (currentListType != null && !listBuffer.isEmpty()) {
+                    content.add(makeListNode(currentListType, listBuffer));
+                    listBuffer = new ArrayList<Map<String, Object>>();
+                    currentListType = null;
+                }
+                content.add(mediaSingle);
+            }
+        }
+
+        // flush remaining segments as paragraph
+        if (!lineSegments.isEmpty()) {
+            Map<String, Object> paragraph = makeParagraphNodeFromSegments(lineSegments);
+            if (currentListType != null && !listBuffer.isEmpty()) {
+                content.add(makeListNode(currentListType, listBuffer));
+                listBuffer = new ArrayList<Map<String, Object>>();
+                currentListType = null;
+            }
+            content.add(paragraph);
+        }
+
+        // flush any remaining list
+        if (currentListType != null && !listBuffer.isEmpty()) {
+            content.add(makeListNode(currentListType, listBuffer));
+        }
+
+        adf.put("content", content);
+        return adf;
+    }
+
+    // helper: build paragraph node from segments (each segment: {text, attrs})
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> makeParagraphNodeFromSegments(List<Map<String, Object>> segments) {
+        Map<String, Object> paragraph = new HashMap<String, Object>();
+        paragraph.put("type", "paragraph");
+        List<Map<String, Object>> inner = new ArrayList<Map<String, Object>>();
+        for (Map<String, Object> seg : segments) {
+            String txt = (String) seg.get("text");
+            Map<String, Object> segAttrs = (Map<String, Object>) seg.get("attrs");
+            if (txt != null && txt.length() > 0) {
+                Map<String, Object> textNode = new HashMap<String, Object>();
+                textNode.put("type", "text");
+                textNode.put("text", txt);
+                List<Map<String, Object>> marks = deltaAttrsToAdfMarks(segAttrs);
+                if (marks != null && !marks.isEmpty()) {
+                    textNode.put("marks", marks);
+                }
+                inner.add(textNode);
+            }
+        }
+        // ensure at least one empty text node if paragraph empty
+        if (inner.isEmpty()) {
+            Map<String, Object> textNode = new HashMap<String, Object>();
+            textNode.put("type", "text");
+            textNode.put("text", "");
+            inner.add(textNode);
+        }
+        paragraph.put("content", inner);
+        return paragraph;
+    }
+
+    /**
+     * inline delta attrs -> ADF marks
+     *  支持：bold, italic, underline, strike, color, link, size, background, font
+     */
+    @SuppressWarnings("unchecked")
+    private static List<Map<String, Object>> deltaAttrsToAdfMarks(Map<String, Object> attrs) {
+        List<Map<String, Object>> marks = new ArrayList<Map<String, Object>>();
+        if (attrs == null) return marks;
+        if (attrs.get("bold") != null && Boolean.TRUE.equals(attrs.get("bold"))) {
+            marks.add(markOf("strong", null));
+        }
+        if (attrs.get("italic") != null && Boolean.TRUE.equals(attrs.get("italic"))) {
+            marks.add(markOf("em", null));
+        }
+        if (attrs.get("underline") != null && Boolean.TRUE.equals(attrs.get("underline"))) {
+            marks.add(markOf("underline", null));
+        }
+        if (attrs.get("strike") != null && Boolean.TRUE.equals(attrs.get("strike"))) {
+            marks.add(markOf("strike", null));
+        }
+        if (attrs.get("color") != null) {
+            Map<String, Object> a = new HashMap<String, Object>();
+            a.put("color", String.valueOf(attrs.get("color")));
+            marks.add(markOf("textColor", a));
+        }
+        // 背景色（高亮）
+        if (attrs.get("background") != null) {
+            Map<String, Object> a = new HashMap<String, Object>();
+            a.put("color", String.valueOf(attrs.get("background")));
+            marks.add(markOf("background", a)); // custom mark name
+        }
+        // 字体大小
+        if (attrs.get("size") != null) {
+            Map<String, Object> a = new HashMap<String, Object>();
+            a.put("value", String.valueOf(attrs.get("size")));
+            marks.add(markOf("textSize", a)); // custom mark name
+        }
+        // 字体 family
+        if (attrs.get("font") != null) {
+            Map<String, Object> a = new HashMap<String, Object>();
+            a.put("family", String.valueOf(attrs.get("font")));
+            marks.add(markOf("fontFamily", a)); // custom mark name
+        }
+        if (attrs.get("link") != null) {
+            Map<String, Object> a = new HashMap<String, Object>();
+            a.put("href", String.valueOf(attrs.get("link")));
+            marks.add(markOf("link", a));
+        }
+        return marks;
+    }
+
+    private static Map<String, Object> markOf(String type, Map<String, Object> attrs) {
+        Map<String, Object> m = new HashMap<String, Object>();
+        m.put("type", type);
+        if (attrs != null) m.put("attrs", attrs);
+        return m;
+    }
+
+    // ---------- ADF -> Delta ----------
+    @SuppressWarnings("unchecked")
+    public static Map<String, Object> adfToDelta(Map<String, Object> adf) {
+        List<Map<String, Object>> content = (List<Map<String, Object>>) adf.get("content");
+        List<Map<String, Object>> ops = new ArrayList<Map<String, Object>>();
+
+        if (content == null) content = new ArrayList<Map<String, Object>>();
+
+        for (Map<String, Object> node : content) {
+            String type = String.valueOf(node.get("type"));
+            if ("paragraph".equals(type)) {
+                List<Map<String, Object>> inner = (List<Map<String, Object>>) node.get("content");
+                for (Map<String, Object> t : inner) {
+                    if ("text".equals(String.valueOf(t.get("type")))) {
+                        String txt = String.valueOf(t.get("text"));
+                        Map<String, Object> op = new HashMap<String, Object>();
+                        op.put("insert", txt);
+                        List<Map<String, Object>> marks = (List<Map<String, Object>>) t.get("marks");
+                        Map<String, Object> attrs = adfMarksToDeltaAttrs(marks);
+                        if (attrs != null && !attrs.isEmpty()) {
+                            op.put("attributes", attrs);
+                        }
+                        ops.add(op);
+                    }
+                }
+                Map<String, Object> newline = new HashMap<String, Object>();
+                newline.put("insert", "\n");
+                // paragraph-level attrs -> e.g., indent
+                Map<String, Object> pattrs = (Map<String, Object>) node.get("attrs");
+                if (pattrs != null && pattrs.get("indent") != null) {
+                    Map<String, Object> attr = new HashMap<String, Object>();
+                    attr.put("indent", ((Number) pattrs.get("indent")).intValue());
+                    newline.put("attributes", attr);
+                }
+                ops.add(newline);
+            }
+            else if ("blockquote".equals(type)) {
+                // blockquote contains paragraphs
+                List<Map<String, Object>> qcontent = (List<Map<String, Object>>) node.get("content");
+                if (qcontent != null) {
+                    for (Map<String, Object> para : qcontent) {
+                        List<Map<String, Object>> inner = (List<Map<String, Object>>) para.get("content");
+                        if (inner != null) {
+                            for (Map<String, Object> t : inner) {
+                                if ("text".equals(String.valueOf(t.get("type")))) {
+                                    String txt = String.valueOf(t.get("text"));
+                                    Map<String, Object> op = new HashMap<String, Object>();
+                                    op.put("insert", txt);
+                                    List<Map<String, Object>> marks = (List<Map<String, Object>>) t.get("marks");
+                                    Map<String, Object> attrs = adfMarksToDeltaAttrs(marks);
+                                    if (attrs != null && !attrs.isEmpty()) {
+                                        op.put("attributes", attrs);
+                                    }
+                                    ops.add(op);
+                                }
+                            }
+                        }
+                        Map<String, Object> newline = new HashMap<String, Object>();
+                        newline.put("insert", "\n");
+                        Map<String, Object> attr = new HashMap<String, Object>();
+                        attr.put("blockquote", true);
+                        newline.put("attributes", attr);
+                        ops.add(newline);
+                    }
+                }
+            }
+            else if ("orderedList".equals(type) || "bulletList".equals(type)) {
+                String listType = "orderedList".equals(type) ? "ordered" : "bullet";
+                List<Map<String, Object>> items = (List<Map<String, Object>>) node.get("content");
+                for (Map<String, Object> item : items) {
+                    List<Map<String, Object>> itemContent = (List<Map<String, Object>>) item.get("content");
+                    if (itemContent != null && !itemContent.isEmpty()) {
+                        Map<String, Object> paragraph = itemContent.get(0);
+                        List<Map<String, Object>> inner = (List<Map<String, Object>>) paragraph.get("content");
+                        for (Map<String, Object> t : inner) {
+                            if ("text".equals(String.valueOf(t.get("type")))) {
+                                String txt = String.valueOf(t.get("text"));
+                                Map<String, Object> opText = new HashMap<String, Object>();
+                                opText.put("insert", txt);
+                                List<Map<String, Object>> marks = (List<Map<String, Object>>) t.get("marks");
+                                Map<String, Object> attrs = adfMarksToDeltaAttrs(marks);
+                                if (attrs != null && !attrs.isEmpty()) {
+                                    opText.put("attributes", attrs);
+                                }
+                                ops.add(opText);
+                            }
+                        }
+                        Map<String, Object> newline = new HashMap<String, Object>();
+                        newline.put("insert", "\n");
+                        Map<String, Object> attr = new HashMap<String, Object>();
+                        attr.put("list", listType);
+                        // paragraph attrs may contain indent
+                        Map<String, Object> pattrs = (Map<String, Object>) paragraph.get("attrs");
+                        if (pattrs != null && pattrs.get("indent") != null) {
+                            attr.put("indent", ((Number) pattrs.get("indent")).intValue());
+                        }
+                        newline.put("attributes", attr);
+                        ops.add(newline);
+                    }
+                }
+            }
+            else if ("mediaSingle".equals(type) || "mediaGroup".equals(type)) {
+                List<Map<String, Object>> medias = (List<Map<String, Object>>) node.get("content");
+                if (medias != null) {
+                    for (Map<String, Object> media : medias) {
+                        Map<String, Object> attrs = (Map<String, Object>) media.get("attrs");
+                        if (attrs != null) {
+                            String url = (String) attrs.get("url");
+                            if (url == null && attrs.get("id") != null) {
+                                url = "/rest/api/3/attachments/" + attrs.get("id") + "/data";
+                            }
+                            Map<String, Object> embed = new HashMap<String, Object>();
+                            Map<String, Object> insert = new HashMap<String, Object>();
+                            insert.put("image", url);
+                            embed.put("insert", insert);
+                            ops.add(embed);
+                        }
+                    }
+                }
+            }
+        }
+
+        Map<String, Object> delta = new HashMap<String, Object>();
+        delta.put("ops", ops);
+        return delta;
+    }
+
+    /**
+     * ADF marks -> Delta attrs (inline)
+     * 支持 strong/em/underline/strike/textColor/link/textSize/background/fontFamily
+     */
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> adfMarksToDeltaAttrs(List<Map<String, Object>> marks) {
+        Map<String, Object> attrs = new HashMap<String, Object>();
+        if (marks == null) return attrs;
+        for (Map<String, Object> m : marks) {
+            String type = String.valueOf(m.get("type"));
+            Map<String, Object> mAttrs = (Map<String, Object>) m.get("attrs");
+            if ("strong".equals(type)) attrs.put("bold", true);
+            else if ("em".equals(type)) attrs.put("italic", true);
+            else if ("underline".equals(type)) attrs.put("underline", true);
+            else if ("strike".equals(type)) attrs.put("strike", true);
+            else if ("textColor".equals(type) && mAttrs != null && mAttrs.get("color") != null) attrs.put("color", String.valueOf(mAttrs.get("color")));
+            else if ("link".equals(type) && mAttrs != null && mAttrs.get("href") != null) attrs.put("link", String.valueOf(mAttrs.get("href")));
+            else if ("textSize".equals(type) && mAttrs != null && mAttrs.get("value") != null) attrs.put("size", String.valueOf(mAttrs.get("value")));
+            else if ("background".equals(type) && mAttrs != null && mAttrs.get("color") != null) attrs.put("background", String.valueOf(mAttrs.get("color")));
+            else if ("fontFamily".equals(type) && mAttrs != null && mAttrs.get("family") != null) attrs.put("font", String.valueOf(mAttrs.get("family")));
+        }
+        return attrs;
+    }
+
+    private static Map<String, Object> makeListItem(Map<String, Object> paragraph) {
+        Map<String, Object> item = new HashMap<String, Object>();
+        item.put("type", "listItem");
+        List<Map<String, Object>> content = new ArrayList<Map<String, Object>>();
+        content.add(paragraph);
+        item.put("content", content);
+        return item;
+    }
+
+    private static Map<String, Object> makeListNode(String listType, List<Map<String, Object>> items) {
+        Map<String, Object> node = new HashMap<String, Object>();
+        if ("ordered".equals(listType)) {
+            node.put("type", "orderedList");
+            Map<String, Object> attrs = new HashMap<String, Object>();
+            attrs.put("order", 1);
+            node.put("attrs", attrs);
+        } else {
+            node.put("type", "bulletList");
+        }
+        node.put("content", items);
+        return node;
+    }
+
+    private static Map<String, Object> makeMediaSingleNode(String imageUrl) {
+        Map<String, Object> mediaSingle = new HashMap<String, Object>();
+        mediaSingle.put("type", "mediaSingle");
+        Map<String, Object> attrs = new HashMap<String, Object>();
+        attrs.put("layout", "center");
+        mediaSingle.put("attrs", attrs);
+        List<Map<String, Object>> content = new ArrayList<Map<String, Object>>();
+        Map<String, Object> media = new HashMap<String, Object>();
+        media.put("type", "media");
+        Map<String, Object> mediaAttrs = new HashMap<String, Object>();
+        mediaAttrs.put("type", "external");
+        mediaAttrs.put("url", imageUrl);
+        media.put("attrs", mediaAttrs);
+        content.add(media);
+        mediaSingle.put("content", content);
+        return mediaSingle;
+    }
+
+    // JSON serializer (kept simple, same as before)
+    private static String toJson(Object obj) {
+        if (obj == null) return "null";
+        if (obj instanceof String) return '"' + escape((String) obj) + '"';
+        if (obj instanceof Number || obj instanceof Boolean) return String.valueOf(obj);
+        if (obj instanceof Map) {
+            StringBuilder sb = new StringBuilder();
+            sb.append('{');
+            Map<?, ?> m = (Map<?, ?>) obj;
+            boolean first = true;
+            for (Map.Entry<?, ?> e : m.entrySet()) {
+                if (!first) sb.append(',');
+                first = false;
+                sb.append(toJson(String.valueOf(e.getKey()))).append(':').append(toJson(e.getValue()));
+            }
+            sb.append('}');
+            return sb.toString();
+        }
+        if (obj instanceof List) {
+            StringBuilder sb = new StringBuilder();
+            sb.append('[');
+            List<?> l = (List<?>) obj;
+            for (int i = 0; i < l.size(); i++) {
+                if (i > 0) sb.append(',');
+                sb.append(toJson(l.get(i)));
+            }
+            sb.append(']');
+            return sb.toString();
+        }
+        return '"' + escape(String.valueOf(obj)) + '"';
+    }
+
+    private static String escape(String s) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            switch (c) {
+                case '\\': sb.append("\\\\"); break;
+                case '"': sb.append("\\\""); break;
+                case '\b': sb.append("\\b"); break;
+                case '\f': sb.append("\\f"); break;
+                case '\n': sb.append("\\n"); break;
+                case '\r': sb.append("\\r"); break;
+                case '\t': sb.append("\\t"); break;
+                default:
+                    if (c < 32) {
+                        sb.append(String.format("\\u%04x", (int) c));
+                    } else {
+                        sb.append(c);
+                    }
+            }
+        }
+        return sb.toString();
+    }
+
+    // ---------- test main ----------
+    public static void main(String[] args) {
+        List<Map<String, Object>> ops = new ArrayList<Map<String, Object>>();
+
+        // 一行文本 + newline 标记为 blockquote
+        ops.add(new HashMap<String, Object>() {{ put("insert", "这是引用内容"); }});
+        ops.add(new HashMap<String, Object>() {{ put("insert", "\n"); put("attributes", new HashMap<String, Object>() {{ put("blockquote", true); }}); }});
+
+        // 带字体大小和背景色与链接的段落
+        ops.add(new HashMap<String, Object>() {{ put("insert", "链接文字"); put("attributes", new HashMap<String, Object>() {{ put("link", "https://example.com"); put("size", "large"); put("background", "#ffef99"); }}); }});
+        ops.add(new HashMap<String, Object>() {{ put("insert", "\n"); }});
+
+        // 缩进 + 列表项
+        ops.add(new HashMap<String, Object>() {{ put("insert", "列表项一"); }});
+        ops.add(new HashMap<String, Object>() {{ put("insert", "\n"); put("attributes", new HashMap<String, Object>() {{ put("list", "bullet"); put("indent", 1); }}); }});
+
+        Map<String, Object> delta = new HashMap<String, Object>();
+        delta.put("ops", ops);
+
+        Map<String, Object> adf = deltaToAdf(delta);
+        System.out.println("ADF:\n" + toJson(adf));
+
+        Map<String, Object> delta2 = adfToDelta(adf);
+        System.out.println("Delta back:\n" + toJson(delta2));
+
+        Map<String, Object> adfBack = deltaToAdf(delta2);
+        System.out.println("ADF back:\n" + toJson(adfBack));
+    }
+}
 
 import java.util.*;
 
