@@ -1,4 +1,617 @@
+import java.util.*;
 
+/**
+ * AdfDeltaConverter — 支持 Jira 风格的嵌套列表（子列表放在父 listItem 的 content 中）
+ * Java 1.8 单文件
+ *
+ * 双向：Delta <-> ADF
+ *
+ * 主要点：
+ *  - deltaToAdf: 使用 listStack 管理嵌套层级。indent=0 => 顶层，indent=1 => 顶层某项下的子列表，依此类推。
+ *  - adfToDelta: 递归展开嵌套 list，生成 newline 的 attributes 包含 list + indent（indent>0 时写入）。
+ *
+ * 另外保留并支持 inline marks: bold, italic, underline, strike, color, link, size, background, font
+ * 及 blockquote, indent 等 block-level 属性（indent 同时用于生成嵌套结构）。
+ */
+public class AdfDeltaConverter {
+
+    @SuppressWarnings("unchecked")
+    public static Map<String, Object> deltaToAdf(Map<String, Object> delta) {
+        List<Map<String, Object>> ops = (List<Map<String, Object>>) delta.get("ops");
+        Map<String, Object> adf = new HashMap<String, Object>();
+        adf.put("version", 1);
+        adf.put("type", "doc");
+        List<Map<String, Object>> content = new ArrayList<Map<String, Object>>();
+
+        // 列表栈：每一层是一个列表节点（ADF格式），用于构建嵌套
+        List<Map<String, Object>> listStack = new ArrayList<Map<String, Object>>();
+        List<Map<String, Object>> lineSegments = new ArrayList<Map<String, Object>>();
+
+        for (int i = 0; i < ops.size(); i++) {
+            Map<String, Object> op = ops.get(i);
+            Object insertObj = op.get("insert");
+            Map<String, Object> attrs = (Map<String, Object>) op.get("attributes");
+
+            if (insertObj instanceof String) {
+                String s = (String) insertObj;
+                String[] parts = s.split("\n", -1);
+                for (int p = 0; p < parts.length; p++) {
+                    String part = parts[p];
+                    Map<String, Object> seg = new HashMap<String, Object>();
+                    seg.put("text", part);
+                    if (attrs != null && !attrs.isEmpty()) seg.put("attrs", attrs);
+                    else seg.put("attrs", null);
+                    lineSegments.add(seg);
+
+                    boolean hasInternalNewline = (p < parts.length - 1);
+                    boolean isLastPart = (p == parts.length - 1);
+
+                    if (hasInternalNewline) {
+                        // finalize this line (newline inside same op)
+                        Map<String, Object> paragraph = makeParagraphNodeFromSegments(lineSegments);
+
+                        // apply inline op attrs if they carry list/blockquote/indent (rare)
+                        Map<String, Object> lineAttrs = (attrs != null && (attrs.containsKey("list") || attrs.containsKey("blockquote") || attrs.containsKey("indent"))) ? attrs : null;
+
+                        if (lineAttrs != null && lineAttrs.get("list") != null) {
+                            String listType = String.valueOf(lineAttrs.get("list"));
+                            int indent = lineAttrs.get("indent") != null ? ((Number) lineAttrs.get("indent")).intValue() : 0;
+                            addListItemToStack(content, listStack, paragraph, listType, indent);
+                        } else if (lineAttrs != null && lineAttrs.get("blockquote") != null && Boolean.TRUE.equals(lineAttrs.get("blockquote"))) {
+                            Map<String, Object> quote = new HashMap<String, Object>();
+                            quote.put("type", "blockquote");
+                            List<Map<String, Object>> qcontent = new ArrayList<Map<String, Object>>();
+                            qcontent.add(paragraph);
+                            quote.put("content", qcontent);
+                            flushListStackToContent(content, listStack);
+                            content.add(quote);
+                        } else {
+                            // normal paragraph
+                            flushListStackToContent(content, listStack);
+                            if (lineAttrs != null && lineAttrs.get("indent") != null) {
+                                Map<String, Object> pa = new HashMap<String, Object>();
+                                pa.put("indent", ((Number) lineAttrs.get("indent")).intValue());
+                                paragraph.put("attrs", pa);
+                            }
+                            content.add(paragraph);
+                        }
+
+                        lineSegments = new ArrayList<Map<String, Object>>();
+                    }
+
+                    if (isLastPart) {
+                        // lookahead: check next standalone newline op
+                        if (i + 1 < ops.size()) {
+                            Map<String, Object> nextOp = ops.get(i + 1);
+                            Object nextInsert = nextOp.get("insert");
+                            Map<String, Object> nextAttrs = (Map<String, Object>) nextOp.get("attributes");
+                            if (nextInsert instanceof String && "\n".equals(nextInsert)) {
+                                // next may have attributes -> block-level attrs for this line
+                                if (nextAttrs != null && !nextAttrs.isEmpty()) {
+                                    Map<String, Object> paragraph = makeParagraphNodeFromSegments(lineSegments);
+
+                                    if (nextAttrs.get("list") != null) {
+                                        String listType = String.valueOf(nextAttrs.get("list"));
+                                        int indent = nextAttrs.get("indent") != null ? ((Number) nextAttrs.get("indent")).intValue() : 0;
+                                        addListItemToStack(content, listStack, paragraph, listType, indent);
+                                    } else if (nextAttrs.get("blockquote") != null && Boolean.TRUE.equals(nextAttrs.get("blockquote"))) {
+                                        Map<String, Object> quote = new HashMap<String, Object>();
+                                        quote.put("type", "blockquote");
+                                        List<Map<String, Object>> qcontent = new ArrayList<Map<String, Object>>();
+                                        qcontent.add(paragraph);
+                                        quote.put("content", qcontent);
+                                        flushListStackToContent(content, listStack);
+                                        content.add(quote);
+                                    } else {
+                                        // indent only or other attrs
+                                        if (nextAttrs.get("indent") != null) {
+                                            Map<String, Object> pa = new HashMap<String, Object>();
+                                            pa.put("indent", ((Number) nextAttrs.get("indent")).intValue());
+                                            paragraph.put("attrs", pa);
+                                        }
+                                        flushListStackToContent(content, listStack);
+                                        content.add(paragraph);
+                                    }
+
+                                    // consume the newline op
+                                    i++;
+                                    lineSegments = new ArrayList<Map<String, Object>>();
+                                    continue;
+                                } else {
+                                    // simple newline - finalize paragraph
+                                    Map<String, Object> paragraph = makeParagraphNodeFromSegments(lineSegments);
+                                    flushListStackToContent(content, listStack);
+                                    content.add(paragraph);
+                                    i++; // consume newline
+                                    lineSegments = new ArrayList<Map<String, Object>>();
+                                    continue;
+                                }
+                            }
+                        }
+                        // otherwise keep segments to receive future text
+                    }
+                }
+            } else if (insertObj instanceof Map) {
+                // embedded object like image
+                Map<String, Object> embed = (Map<String, Object>) insertObj;
+                String url = null;
+                if (embed.get("image") instanceof String) {
+                    url = (String) embed.get("image");
+                } else if (embed.get("image") instanceof Map) {
+                    Map<String, Object> im = (Map<String, Object>) embed.get("image");
+                    if (im.get("url") != null) url = String.valueOf(im.get("url"));
+                    else if (im.get("id") != null) url = String.valueOf(im.get("id"));
+                }
+                Map<String, Object> mediaSingle = makeMediaSingleNode(url);
+                // flush pending paragraph and lists
+                if (!lineSegments.isEmpty()) {
+                    Map<String, Object> paragraph = makeParagraphNodeFromSegments(lineSegments);
+                    flushListStackToContent(content, listStack);
+                    content.add(paragraph);
+                    lineSegments = new ArrayList<Map<String, Object>>();
+                }
+                flushListStackToContent(content, listStack);
+                content.add(mediaSingle);
+            }
+        }
+
+        // flush remaining segments as paragraph
+        if (!lineSegments.isEmpty()) {
+            Map<String, Object> paragraph = makeParagraphNodeFromSegments(lineSegments);
+            flushListStackToContent(content, listStack);
+            content.add(paragraph);
+            lineSegments = new ArrayList<Map<String, Object>>();
+        }
+
+        // flush any remaining list stack
+        flushListStackToContent(content, listStack);
+
+        adf.put("content", content);
+        return adf;
+    }
+
+    // 把 paragraph 添加为 list 的一项，并根据 indent 建立/调整嵌套结构
+    @SuppressWarnings("unchecked")
+    private static void addListItemToStack(List<Map<String, Object>> docContent,
+                                           List<Map<String, Object>> listStack,
+                                           Map<String, Object> paragraph,
+                                           String listType,
+                                           int indent) {
+        // indent: 0 => 顶层; 1 => 顶层项下的子列表; ...
+        int desiredDepth = indent + 1; // stack size should be desiredDepth (1-based)
+        if (listStack.isEmpty()) {
+            // create root list and possibly nested children
+            Map<String, Object> root = createEmptyListNode(listType);
+            listStack.add(root);
+            // create deeper nested lists if desiredDepth > 1 (attach to last item, but there is no last item yet)
+            // create placeholders: we'll attach items as they come — but nested list creation requires a parent listItem
+            // So only create deeper levels when there's a last item to attach to.
+        } else {
+            // if root list type differs, flush existing lists and start new
+            String rootType = String.valueOf(listStack.get(0).get("type"));
+            String expectedRootType = "ordered".equals(listType) ? "orderedList" : "bulletList";
+            if (!rootType.equals(expectedRootType)) {
+                flushListStackToContent(docContent, listStack);
+                Map<String, Object> root = createEmptyListNode(listType);
+                listStack.add(root);
+            }
+        }
+
+        // ensure stack depth: if we need deeper levels, try to create them by attaching under last listItem of previous level
+        while (listStack.size() < desiredDepth) {
+            // get previous level's items
+            Map<String, Object> prevList = listStack.get(listStack.size() - 1);
+            List<Map<String, Object>> prevItems = (List<Map<String, Object>>) prevList.get("content");
+            if (prevItems.isEmpty()) {
+                // no previous item to attach nested list to: create a placeholder empty listItem with empty paragraph
+                Map<String, Object> emptyPara = makeParagraphNode("");
+                Map<String, Object> placeholderItem = makeListItem(emptyPara);
+                prevItems.add(placeholderItem);
+            }
+            // attach new nested list into last item's content
+            Map<String, Object> lastItem = prevItems.get(prevItems.size() - 1);
+            List<Map<String, Object>> lastContent = (List<Map<String, Object>>) lastItem.get("content");
+            Map<String, Object> newNested = createEmptyListNode(listType);
+            lastContent.add(newNested);
+            listStack.add(newNested);
+        }
+
+        // if stack deeper than desiredDepth, pop extra levels and finalize them into parent before adding new item
+        while (listStack.size() > desiredDepth) {
+            // pop: but no need to flush to docContent; nesting remains inside parent structure
+            listStack.remove(listStack.size() - 1);
+        }
+
+        // Finally add the paragraph as a listItem into deepest list
+        Map<String, Object> targetList = listStack.get(listStack.size() - 1);
+        List<Map<String, Object>> items = (List<Map<String, Object>>) targetList.get("content");
+        items.add(makeListItem(paragraph));
+    }
+
+    // create an empty list node of listType ("ordered" or "bullet")
+    private static Map<String, Object> createEmptyListNode(String listType) {
+        Map<String, Object> node = new HashMap<String, Object>();
+        if ("ordered".equals(listType)) {
+            node.put("type", "orderedList");
+            Map<String, Object> attrs = new HashMap<String, Object>();
+            attrs.put("order", 1);
+            node.put("attrs", attrs);
+        } else {
+            node.put("type", "bulletList");
+        }
+        node.put("content", new ArrayList<Map<String, Object>>());
+        return node;
+    }
+
+    // flush listStack 根节点到 docContent（整个嵌套结构一次性加入 doc）
+    private static void flushListStackToContent(List<Map<String, Object>> docContent, List<Map<String, Object>> listStack) {
+        if (listStack == null || listStack.isEmpty()) return;
+        // 根节点在 index 0
+        Map<String, Object> root = listStack.get(0);
+        docContent.add(root);
+        listStack.clear();
+    }
+
+    // helper: build paragraph node from segments (each segment: {text, attrs})
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> makeParagraphNodeFromSegments(List<Map<String, Object>> segments) {
+        Map<String, Object> paragraph = new HashMap<String, Object>();
+        paragraph.put("type", "paragraph");
+        List<Map<String, Object>> inner = new ArrayList<Map<String, Object>>();
+        for (Map<String, Object> seg : segments) {
+            String txt = (String) seg.get("text");
+            Map<String, Object> segAttrs = (Map<String, Object>) seg.get("attrs");
+            if (txt != null && txt.length() > 0) {
+                Map<String, Object> textNode = new HashMap<String, Object>();
+                textNode.put("type", "text");
+                textNode.put("text", txt);
+                List<Map<String, Object>> marks = deltaAttrsToAdfMarks(segAttrs);
+                if (marks != null && !marks.isEmpty()) textNode.put("marks", marks);
+                inner.add(textNode);
+            }
+        }
+        if (inner.isEmpty()) {
+            Map<String, Object> textNode = new HashMap<String, Object>();
+            textNode.put("type", "text");
+            textNode.put("text", "");
+            inner.add(textNode);
+        }
+        paragraph.put("content", inner);
+        return paragraph;
+    }
+
+    /**
+     * inline delta attrs -> ADF marks（保留之前的扩展）
+     */
+    @SuppressWarnings("unchecked")
+    private static List<Map<String, Object>> deltaAttrsToAdfMarks(Map<String, Object> attrs) {
+        List<Map<String, Object>> marks = new ArrayList<Map<String, Object>>();
+        if (attrs == null) return marks;
+        if (attrs.get("bold") != null && Boolean.TRUE.equals(attrs.get("bold"))) marks.add(markOf("strong", null));
+        if (attrs.get("italic") != null && Boolean.TRUE.equals(attrs.get("italic"))) marks.add(markOf("em", null));
+        if (attrs.get("underline") != null && Boolean.TRUE.equals(attrs.get("underline"))) marks.add(markOf("underline", null));
+        if (attrs.get("strike") != null && Boolean.TRUE.equals(attrs.get("strike"))) marks.add(markOf("strike", null));
+        if (attrs.get("color") != null) {
+            Map<String, Object> a = new HashMap<String, Object>(); a.put("color", String.valueOf(attrs.get("color")));
+            marks.add(markOf("textColor", a));
+        }
+        if (attrs.get("background") != null) {
+            Map<String, Object> a = new HashMap<String, Object>(); a.put("color", String.valueOf(attrs.get("background")));
+            marks.add(markOf("background", a));
+        }
+        if (attrs.get("size") != null) {
+            Map<String, Object> a = new HashMap<String, Object>(); a.put("value", String.valueOf(attrs.get("size")));
+            marks.add(markOf("textSize", a));
+        }
+        if (attrs.get("font") != null) {
+            Map<String, Object> a = new HashMap<String, Object>(); a.put("family", String.valueOf(attrs.get("font")));
+            marks.add(markOf("fontFamily", a));
+        }
+        if (attrs.get("link") != null) {
+            Map<String, Object> a = new HashMap<String, Object>(); a.put("href", String.valueOf(attrs.get("link")));
+            marks.add(markOf("link", a));
+        }
+        return marks;
+    }
+
+    private static Map<String, Object> markOf(String type, Map<String, Object> attrs) {
+        Map<String, Object> m = new HashMap<String, Object>();
+        m.put("type", type);
+        if (attrs != null) m.put("attrs", attrs);
+        return m;
+    }
+
+    // ---------- ADF -> Delta ----------
+    @SuppressWarnings("unchecked")
+    public static Map<String, Object> adfToDelta(Map<String, Object> adf) {
+        List<Map<String, Object>> content = (List<Map<String, Object>>) adf.get("content");
+        List<Map<String, Object>> ops = new ArrayList<Map<String, Object>>();
+
+        if (content == null) content = new ArrayList<Map<String, Object>>();
+
+        for (Map<String, Object> node : content) {
+            String type = String.valueOf(node.get("type"));
+            if ("paragraph".equals(type)) {
+                List<Map<String, Object>> inner = (List<Map<String, Object>>) node.get("content");
+                for (Map<String, Object> t : inner) {
+                    if ("text".equals(String.valueOf(t.get("type")))) {
+                        String txt = String.valueOf(t.get("text"));
+                        Map<String, Object> op = new HashMap<String, Object>();
+                        op.put("insert", txt);
+                        List<Map<String, Object>> marks = (List<Map<String, Object>>) t.get("marks");
+                        Map<String, Object> attrs = adfMarksToDeltaAttrs(marks);
+                        if (attrs != null && !attrs.isEmpty()) op.put("attributes", attrs);
+                        ops.add(op);
+                    }
+                }
+                Map<String, Object> newline = new HashMap<String, Object>();
+                newline.put("insert", "\n");
+                Map<String, Object> pattrs = (Map<String, Object>) node.get("attrs");
+                if (pattrs != null && pattrs.get("indent") != null) {
+                    Map<String, Object> attr = new HashMap<String, Object>();
+                    attr.put("indent", ((Number) pattrs.get("indent")).intValue());
+                    newline.put("attributes", attr);
+                }
+                ops.add(newline);
+            }
+            else if ("blockquote".equals(type)) {
+                List<Map<String, Object>> qcontent = (List<Map<String, Object>>) node.get("content");
+                if (qcontent != null) {
+                    for (Map<String, Object> para : qcontent) {
+                        List<Map<String, Object>> inner = (List<Map<String, Object>>) para.get("content");
+                        if (inner != null) {
+                            for (Map<String, Object> t : inner) {
+                                if ("text".equals(String.valueOf(t.get("type")))) {
+                                    String txt = String.valueOf(t.get("text"));
+                                    Map<String, Object> op = new HashMap<String, Object>();
+                                    op.put("insert", txt);
+                                    List<Map<String, Object>> marks = (List<Map<String, Object>>) t.get("marks");
+                                    Map<String, Object> attrs = adfMarksToDeltaAttrs(marks);
+                                    if (attrs != null && !attrs.isEmpty()) op.put("attributes", attrs);
+                                    ops.add(op);
+                                }
+                            }
+                        }
+                        Map<String, Object> newline = new HashMap<String, Object>();
+                        newline.put("insert", "\n");
+                        Map<String, Object> attr = new HashMap<String, Object>();
+                        attr.put("blockquote", true);
+                        newline.put("attributes", attr);
+                        ops.add(newline);
+                    }
+                }
+            }
+            else if ("orderedList".equals(type) || "bulletList".equals(type)) {
+                processAdfListToDelta(node, 0, ops);
+            }
+            else if ("mediaSingle".equals(type) || "mediaGroup".equals(type)) {
+                List<Map<String, Object>> medias = (List<Map<String, Object>>) node.get("content");
+                if (medias != null) {
+                    for (Map<String, Object> media : medias) {
+                        Map<String, Object> attrs = (Map<String, Object>) media.get("attrs");
+                        if (attrs != null) {
+                            String url = (String) attrs.get("url");
+                            if (url == null && attrs.get("id") != null) {
+                                url = "/rest/api/3/attachments/" + attrs.get("id") + "/data";
+                            }
+                            Map<String, Object> embed = new HashMap<String, Object>();
+                            Map<String, Object> insert = new HashMap<String, Object>();
+                            insert.put("image", url);
+                            embed.put("insert", insert);
+                            ops.add(embed);
+                        }
+                    }
+                }
+            }
+        }
+
+        Map<String, Object> delta = new HashMap<String, Object>();
+        delta.put("ops", ops);
+        return delta;
+    }
+
+    // 递归把 ADF 的 list 节点展平成 Delta ops，indent 表示当前层级（0 顶层）
+    @SuppressWarnings("unchecked")
+    private static void processAdfListToDelta(Map<String, Object> listNode, int indent, List<Map<String, Object>> ops) {
+        String type = String.valueOf(listNode.get("type"));
+        String listType = "orderedList".equals(type) ? "ordered" : "bullet";
+        List<Map<String, Object>> items = (List<Map<String, Object>>) listNode.get("content");
+        if (items == null) return;
+
+        for (Map<String, Object> item : items) {
+            List<Map<String, Object>> itemContent = (List<Map<String, Object>>) item.get("content");
+            if (itemContent != null && !itemContent.isEmpty()) {
+                // 第一个 element 通常是 paragraph
+                Map<String, Object> paragraph = itemContent.get(0);
+                List<Map<String, Object>> inner = (List<Map<String, Object>>) paragraph.get("content");
+                if (inner != null) {
+                    for (Map<String, Object> t : inner) {
+                        if ("text".equals(String.valueOf(t.get("type")))) {
+                            String txt = String.valueOf(t.get("text"));
+                            Map<String, Object> opText = new HashMap<String, Object>();
+                            opText.put("insert", txt);
+                            List<Map<String, Object>> marks = (List<Map<String, Object>>) t.get("marks");
+                            Map<String, Object> attrs = adfMarksToDeltaAttrs(marks);
+                            if (attrs != null && !attrs.isEmpty()) opText.put("attributes", attrs);
+                            ops.add(opText);
+                        }
+                    }
+                }
+                // newline with list + indent (if indent>0)
+                Map<String, Object> newline = new HashMap<String, Object>();
+                newline.put("insert", "\n");
+                Map<String, Object> attr = new HashMap<String, Object>();
+                attr.put("list", listType);
+                if (indent > 0) attr.put("indent", indent);
+                newline.put("attributes", attr);
+                ops.add(newline);
+
+                // 处理该 listItem 内除 paragraph 以外的子节点（例如 nested list）
+                if (itemContent.size() > 1) {
+                    for (int k = 1; k < itemContent.size(); k++) {
+                        Map<String, Object> child = itemContent.get(k);
+                        String ctype = String.valueOf(child.get("type"));
+                        if ("orderedList".equals(ctype) || "bulletList".equals(ctype)) {
+                            processAdfListToDelta(child, indent + 1, ops);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * ADF marks -> Delta attrs (inline)
+     */
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> adfMarksToDeltaAttrs(List<Map<String, Object>> marks) {
+        Map<String, Object> attrs = new HashMap<String, Object>();
+        if (marks == null) return attrs;
+        for (Map<String, Object> m : marks) {
+            String type = String.valueOf(m.get("type"));
+            Map<String, Object> mAttrs = (Map<String, Object>) m.get("attrs");
+            if ("strong".equals(type)) attrs.put("bold", true);
+            else if ("em".equals(type)) attrs.put("italic", true);
+            else if ("underline".equals(type)) attrs.put("underline", true);
+            else if ("strike".equals(type)) attrs.put("strike", true);
+            else if ("textColor".equals(type) && mAttrs != null && mAttrs.get("color") != null) attrs.put("color", String.valueOf(mAttrs.get("color")));
+            else if ("link".equals(type) && mAttrs != null && mAttrs.get("href") != null) attrs.put("link", String.valueOf(mAttrs.get("href")));
+            else if ("textSize".equals(type) && mAttrs != null && mAttrs.get("value") != null) attrs.put("size", String.valueOf(mAttrs.get("value")));
+            else if ("background".equals(type) && mAttrs != null && mAttrs.get("color") != null) attrs.put("background", String.valueOf(mAttrs.get("color")));
+            else if ("fontFamily".equals(type) && mAttrs != null && mAttrs.get("family") != null) attrs.put("font", String.valueOf(mAttrs.get("family")));
+        }
+        return attrs;
+    }
+
+    // helper: make paragraph with simple text
+    private static Map<String, Object> makeParagraphNode(String text) {
+        Map<String, Object> paragraph = new HashMap<String, Object>();
+        paragraph.put("type", "paragraph");
+        List<Map<String, Object>> inner = new ArrayList<Map<String, Object>>();
+        Map<String, Object> textNode = new HashMap<String, Object>();
+        textNode.put("type", "text");
+        textNode.put("text", text);
+        inner.add(textNode);
+        paragraph.put("content", inner);
+        return paragraph;
+    }
+
+    private static Map<String, Object> makeListItem(Map<String, Object> paragraph) {
+        Map<String, Object> item = new HashMap<String, Object>();
+        item.put("type", "listItem");
+        List<Map<String, Object>> content = new ArrayList<Map<String, Object>>();
+        content.add(paragraph);
+        item.put("content", content);
+        return item;
+    }
+
+    private static Map<String, Object> makeMediaSingleNode(String imageUrl) {
+        Map<String, Object> mediaSingle = new HashMap<String, Object>();
+        mediaSingle.put("type", "mediaSingle");
+        Map<String, Object> attrs = new HashMap<String, Object>();
+        attrs.put("layout", "center");
+        mediaSingle.put("attrs", attrs);
+        List<Map<String, Object>> content = new ArrayList<Map<String, Object>>();
+        Map<String, Object> media = new HashMap<String, Object>();
+        media.put("type", "media");
+        Map<String, Object> mediaAttrs = new HashMap<String, Object>();
+        mediaAttrs.put("type", "external");
+        mediaAttrs.put("url", imageUrl);
+        media.put("attrs", mediaAttrs);
+        content.add(media);
+        mediaSingle.put("content", content);
+        return mediaSingle;
+    }
+
+    // JSON serializer (保留)
+    private static String toJson(Object obj) {
+        if (obj == null) return "null";
+        if (obj instanceof String) return '"' + escape((String) obj) + '"';
+        if (obj instanceof Number || obj instanceof Boolean) return String.valueOf(obj);
+        if (obj instanceof Map) {
+            StringBuilder sb = new StringBuilder();
+            sb.append('{');
+            Map<?, ?> m = (Map<?, ?>) obj;
+            boolean first = true;
+            for (Map.Entry<?, ?> e : m.entrySet()) {
+                if (!first) sb.append(',');
+                first = false;
+                sb.append(toJson(String.valueOf(e.getKey()))).append(':').append(toJson(e.getValue()));
+            }
+            sb.append('}');
+            return sb.toString();
+        }
+        if (obj instanceof List) {
+            StringBuilder sb = new StringBuilder();
+            sb.append('[');
+            List<?> l = (List<?>) obj;
+            for (int i = 0; i < l.size(); i++) {
+                if (i > 0) sb.append(',');
+                sb.append(toJson(l.get(i)));
+            }
+            sb.append(']');
+            return sb.toString();
+        }
+        return '"' + escape(String.valueOf(obj)) + '"';
+    }
+
+    private static String escape(String s) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            switch (c) {
+                case '\\': sb.append("\\\\"); break;
+                case '"': sb.append("\\\""); break;
+                case '\b': sb.append("\\b"); break;
+                case '\f': sb.append("\\f"); break;
+                case '\n': sb.append("\\n"); break;
+                case '\r': sb.append("\\r"); break;
+                case '\t': sb.append("\\t"); break;
+                default:
+                    if (c < 32) sb.append(String.format("\\u%04x", (int) c));
+                    else sb.append(c);
+            }
+        }
+        return sb.toString();
+    }
+
+    // ---------- 测试 ----------
+    public static void main(String[] args) {
+        // 构造一个 delta，包含嵌套 list：顶层 bullet -> 子 bullet -> 子子 ordered
+        List<Map<String, Object>> ops = new ArrayList<Map<String, Object>>();
+
+        // 顶层第一项
+        ops.add(new HashMap<String, Object>() {{ put("insert", "顶层项1"); }});
+        ops.add(new HashMap<String, Object>() {{ put("insert", "\n"); put("attributes", new HashMap<String, Object>() {{ put("list", "bullet"); }}); }});
+
+        // 顶层第二项（将包含子列表）
+        ops.add(new HashMap<String, Object>() {{ put("insert", "顶层项2"); }});
+        ops.add(new HashMap<String, Object>() {{ put("insert", "\n"); put("attributes", new HashMap<String, Object>() {{ put("list", "bullet"); }}); }});
+
+        // 子项（indent=1）
+        ops.add(new HashMap<String, Object>() {{ put("insert", "子项2.1"); }});
+        ops.add(new HashMap<String, Object>() {{ put("insert", "\n"); put("attributes", new HashMap<String, Object>() {{ put("list", "bullet"); put("indent", 1); }}); }});
+
+        // 子子项（indent=2, ordered）
+        ops.add(new HashMap<String, Object>() {{ put("insert", "子子项2.1.1"); }});
+        ops.add(new HashMap<String, Object>() {{ put("insert", "\n"); put("attributes", new HashMap<String, Object>() {{ put("list", "ordered"); put("indent", 2); }}); }});
+
+        // 结束，普通段落
+        ops.add(new HashMap<String, Object>() {{ put("insert", "普通段落\n"); }});
+
+        Map<String, Object> delta = new HashMap<String, Object>();
+        delta.put("ops", ops);
+
+        Map<String, Object> adf = deltaToAdf(delta);
+        System.out.println("ADF:\n" + toJson(adf));
+
+        Map<String, Object> delta2 = adfToDelta(adf);
+        System.out.println("\nDelta back:\n" + toJson(delta2));
+
+        Map<String, Object> adfBack = deltaToAdf(delta2);
+        System.out.println("\nADF back:\n" + toJson(adfBack));
+    }
+}
 
 
 import java.util.*;
