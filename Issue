@@ -1,0 +1,438 @@
+下面给你一个 可直接运行（JDK1.8 + Maven） 的 Java 实现样例。功能：
+	•	使用 JIRA REST API 批量读取一批 issue（分页、批量请求），并展开 changelog（expand=changelog）。
+	•	统计每个 issue 在各个状态（status）上累计停留时长（精确到秒，并展示为天/小时/分钟）。
+	•	计算“某个状态结束到某个状态开始”的相隔天数（针对每一次从 A 结束到下一次 B 开始，返回所有发生过的间隔，及统计值：最小/最大/平均/样本数）。
+
+我把实现拆成三部分：Maven pom.xml、核心代码（JiraClient + IssueChangeAnalyzer + Main），以及使用说明与注意事项。
+
+1) pom.xml（依赖：Apache HttpClient + Jackson）
+
+<project xmlns="http://maven.apache.org/POM/4.0.0" ...>
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>jira-changelog-analytics</artifactId>
+  <version>1.0-SNAPSHOT</version>
+  <properties>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <maven.compiler.source>1.8</maven.compiler.source>
+    <maven.compiler.target>1.8</maven.compiler.target>
+  </properties>
+  <dependencies>
+    <!-- HTTP client -->
+    <dependency>
+      <groupId>org.apache.httpcomponents</groupId>
+      <artifactId>httpclient</artifactId>
+      <version>4.5.13</version>
+    </dependency>
+
+    <!-- Jackson for JSON parsing -->
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+      <version>2.12.5</version>
+    </dependency>
+
+    <!-- SLF4J simple logger (optional for nicer logging) -->
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-simple</artifactId>
+      <version>1.7.30</version>
+    </dependency>
+  </dependencies>
+</project>
+
+2) Java 代码
+
+把下面三个类放在同一个包（例如 com.example.jira）。
+
+JiraClient.java
+
+负责：基于基本验证（email + api token / username+password）调用 JIRA API，按批次获取 search 结果并 expand=changelog。
+
+package com.example.jira;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.apache.http.*;
+import org.apache.http.auth.AuthScope;
+import org.apache.http.auth.UsernamePasswordCredentials;
+import org.apache.http.client.methods.CloseableHttpResponse;
+import org.apache.http.client.methods.HttpGet;
+import org.apache.http.client.utils.URIBuilder;
+import org.apache.http.impl.client.*;
+import org.apache.http.util.EntityUtils;
+
+import java.io.IOException;
+import java.net.URISyntaxException;
+import java.util.*;
+
+public class JiraClient {
+    private final String baseUrl; // e.g. https://your-domain.atlassian.net
+    private final String authUsername;
+    private final String authPasswordOrToken; // api token
+    private final CloseableHttpClient httpClient;
+    private final ObjectMapper mapper = new ObjectMapper();
+
+    public JiraClient(String baseUrl, String authUsername, String authPasswordOrToken) {
+        this.baseUrl = baseUrl;
+        this.authUsername = authUsername;
+        this.authPasswordOrToken = authPasswordOrToken;
+        CredentialsProvider credsProvider = new BasicCredentialsProvider();
+        credsProvider.setCredentials(AuthScope.ANY, new UsernamePasswordCredentials(authUsername, authPasswordOrToken));
+        this.httpClient = HttpClients.custom()
+                .setDefaultCredentialsProvider(credsProvider)
+                .build();
+    }
+
+    /**
+     * 批量获取 issues（带 changelog），使用 search endpoint 分页。
+     * keys: issueKey 列表。batchSize 推荐 50（避免 JQL 太长或响应太大）
+     */
+    public List<JsonNode> getIssuesWithChangelog(List<String> keys) throws IOException, URISyntaxException {
+        List<JsonNode> results = new ArrayList<>();
+        int batchSize = 50;
+        for (int i = 0; i < keys.size(); i += batchSize) {
+            List<String> chunk = keys.subList(i, Math.min(keys.size(), i + batchSize));
+            results.addAll(fetchChunk(chunk));
+        }
+        return results;
+    }
+
+    private List<JsonNode> fetchChunk(List<String> keysChunk) throws IOException, URISyntaxException {
+        List<JsonNode> collected = new ArrayList<>();
+        String keyListJql = "key in (" + String.join(",", keysChunk) + ")";
+        int startAt = 0;
+        int maxResults = 50;
+
+        while (true) {
+            URIBuilder ub = new URIBuilder(baseUrl + "/rest/api/3/search");
+            ub.addParameter("jql", keyListJql);
+            ub.addParameter("startAt", String.valueOf(startAt));
+            ub.addParameter("maxResults", String.valueOf(maxResults));
+            ub.addParameter("expand", "changelog");
+            // 需要的字段：created, status (当前)，但我们可以请求全部 fields 或者指定:
+            ub.addParameter("fields", "created,status");
+
+            HttpGet get = new HttpGet(ub.build());
+            // Basic auth header (alternative to CredentialsProvider)
+            String auth = authUsername + ":" + authPasswordOrToken;
+            String encoded = Base64.getEncoder().encodeToString(auth.getBytes("UTF-8"));
+            get.setHeader("Authorization", "Basic " + encoded);
+            get.setHeader("Accept", "application/json");
+
+            try (CloseableHttpResponse resp = httpClient.execute(get)) {
+                int statusCode = resp.getStatusLine().getStatusCode();
+                String body = EntityUtils.toString(resp.getEntity(), "UTF-8");
+                if (statusCode >= 200 && statusCode < 300) {
+                    JsonNode root = mapper.readTree(body);
+                    JsonNode issues = root.get("issues");
+                    if (issues != null && issues.isArray()) {
+                        for (JsonNode issue : issues) {
+                            collected.add(issue);
+                        }
+                    }
+                    int total = root.path("total").asInt();
+                    startAt += maxResults;
+                    if (startAt >= total) break;
+                } else {
+                    throw new IOException("Jira API error. HTTP " + statusCode + " body: " + body);
+                }
+            }
+        }
+
+        return collected;
+    }
+
+    public void close() throws IOException {
+        httpClient.close();
+    }
+}
+
+IssueChangeAnalyzer.java
+
+负责解析 issue JSON（包含 fields.created、fields.status、changelog.histories）并做统计。
+
+package com.example.jira;
+
+import com.fasterxml.jackson.databind.JsonNode;
+
+import java.time.*;
+import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoUnit;
+import java.util.*;
+
+/**
+ * 分析器：把 changelog 转换成按状态的时间区间统计。
+ */
+public class IssueChangeAnalyzer {
+
+    private static final DateTimeFormatter JIRA_DATE_PARSER =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSZ"); // e.g. 2020-01-02T15:04:05.123+0000
+
+    /**
+     * 解析 Jira 的时间字符串为 Instant
+     */
+    private Instant parseJiraDate(String s) {
+        // 有时没有毫秒部分，尝试多种格式
+        try {
+            return ZonedDateTime.parse(s, JIRA_DATE_PARSER).toInstant();
+        } catch (Exception ex) {
+            // try without milliseconds
+            DateTimeFormatter alt = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ssZ");
+            return ZonedDateTime.parse(s, alt).toInstant();
+        }
+    }
+
+    /**
+     * 代表一次 status 变更事件（来源/目标/时间）
+     */
+    private static class StatusEvent {
+        public final Instant time;
+        public final String from;
+        public final String to;
+
+        public StatusEvent(Instant time, String from, String to) {
+            this.time = time;
+            this.from = from;
+            this.to = to;
+        }
+    }
+
+    /**
+     * 计算某个 issue 在每个 status 上的累计停留 Duration。
+     * issueJson 是 /rest/api/... 返回的单个 issue JSON（含 fields.created, fields.status, changelog.histories）
+     * endInstant: 如果为 null，则使用 now()
+     */
+    public Map<String, Duration> computeStatusDurations(JsonNode issueJson, Instant endInstant) {
+        if (endInstant == null) endInstant = Instant.now();
+
+        String key = issueJson.path("key").asText();
+
+        String createdStr = issueJson.path("fields").path("created").asText();
+        Instant created = parseJiraDate(createdStr);
+
+        // current status (at time of query)
+        String currentStatus = issueJson.path("fields").path("status").path("name").asText();
+
+        // 收集所有 status change events
+        List<StatusEvent> events = new ArrayList<>();
+        JsonNode histories = issueJson.path("changelog").path("histories");
+        if (histories != null && histories.isArray()) {
+            for (JsonNode history : histories) {
+                String histCreated = history.path("created").asText();
+                Instant histTime = parseJiraDate(histCreated);
+                JsonNode items = history.path("items");
+                if (items != null && items.isArray()) {
+                    for (JsonNode item : items) {
+                        String field = item.path("field").asText();
+                        if ("status".equalsIgnoreCase(field)) {
+                            String from = item.path("fromString").asText(null);
+                            String to = item.path("toString").asText(null);
+                            events.add(new StatusEvent(histTime, from, to));
+                        }
+                    }
+                }
+            }
+        }
+        // sort by time asc
+        events.sort(Comparator.comparing(e -> e.time));
+
+        Map<String, Duration> accum = new HashMap<>();
+
+        // determine initial status:
+        String initialStatus = null;
+        if (!events.isEmpty()) {
+            initialStatus = events.get(0).from;
+        }
+        if (initialStatus == null || initialStatus.isEmpty()) {
+            // fallback: if there is no from info, assume the status at creation is the first to if exists, else currentStatus
+            if (!events.isEmpty() && events.get(0).from == null) {
+                // try to assume initial is events.get(0).from (null) -> fallback to events.get(0).to? no, that means before the first change, it had from==null (likely creation). We'll assume that before first change it was events.get(0).from or events.get(0).to depending.
+                initialStatus = events.get(0).from != null ? events.get(0).from : (events.get(0).to != null ? events.get(0).to : currentStatus);
+            } else {
+                initialStatus = currentStatus; // no events at all
+            }
+        }
+
+        String activeStatus = initialStatus;
+        Instant lastTime = created;
+
+        for (StatusEvent ev : events) {
+            // interval [lastTime, ev.time) belongs to activeStatus
+            if (activeStatus != null) {
+                Duration dur = Duration.between(lastTime, ev.time);
+                accum.put(activeStatus, accum.getOrDefault(activeStatus, Duration.ZERO).plus(dur));
+            }
+            // update activeStatus to ev.to
+            activeStatus = ev.to != null ? ev.to : activeStatus;
+            lastTime = ev.time;
+        }
+
+        // final interval from lastTime to endInstant
+        if (activeStatus != null && lastTime.isBefore(endInstant)) {
+            Duration dur = Duration.between(lastTime, endInstant);
+            accum.put(activeStatus, accum.getOrDefault(activeStatus, Duration.ZERO).plus(dur));
+        }
+
+        return accum;
+    }
+
+    /**
+     * 返回某个 issue 中每一次从 fromStatus 结束（即 transition from fromStatus -> X）
+     * 到下一次 toStatus 开始（即某次 transition Y -> toStatus）的相隔（以天数、小数表示）。
+     *
+     * 结果是一个 List<Duration>（可能为空）
+     */
+    public List<Duration> computeIntervalsBetweenStatuses(JsonNode issueJson, String fromStatus, String toStatus) {
+        List<StatusEvent> events = new ArrayList<>();
+        JsonNode histories = issueJson.path("changelog").path("histories");
+        if (histories != null && histories.isArray()) {
+            for (JsonNode history : histories) {
+                Instant histTime = parseJiraDate(history.path("created").asText());
+                JsonNode items = history.path("items");
+                if (items != null && items.isArray()) {
+                    for (JsonNode item : items) {
+                        String field = item.path("field").asText();
+                        if ("status".equalsIgnoreCase(field)) {
+                            String from = item.path("fromString").asText(null);
+                            String to = item.path("toString").asText(null);
+                            events.add(new StatusEvent(histTime, from, to));
+                        }
+                    }
+                }
+            }
+        }
+        events.sort(Comparator.comparing(e -> e.time));
+
+        List<Duration> result = new ArrayList<>();
+        // for each event that has ev.from==fromStatus, record its time as endTime;
+        // then find next event whose to == toStatus and whose time is after endTime; compute difference.
+        for (int i = 0; i < events.size(); i++) {
+            StatusEvent ev = events.get(i);
+            if (fromStatus.equals(ev.from)) {
+                Instant endTime = ev.time;
+                // search next event where to == toStatus
+                for (int j = i + 1; j < events.size(); j++) {
+                    StatusEvent ev2 = events.get(j);
+                    if (toStatus.equals(ev2.to)) {
+                        Duration d = Duration.between(endTime, ev2.time);
+                        result.add(d);
+                        break; // only the first subsequent B after this A
+                    }
+                }
+            }
+        }
+        return result;
+    }
+
+    /** 辅助：将 Duration 转成人类可读字符串（天 小时 分钟 秒） */
+    public static String humanReadable(Duration d) {
+        long seconds = d.getSeconds();
+        long days = seconds / (24 * 3600);
+        seconds = seconds % (24 * 3600);
+        long hours = seconds / 3600;
+        seconds = seconds % 3600;
+        long minutes = seconds / 60;
+        seconds = seconds % 60;
+        return String.format("%d days %d hrs %d mins %d secs", days, hours, minutes, seconds);
+    }
+}
+
+Main.java（示例使用）
+
+package com.example.jira;
+
+import com.fasterxml.jackson.databind.JsonNode;
+
+import java.net.URISyntaxException;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.*;
+
+public class Main {
+    public static void main(String[] args) throws Exception {
+        // 配置项 - 请替换成你的 Jira 实例与凭证
+        String baseUrl = "https://your-domain.atlassian.net"; // 不要以 '/' 结尾
+        String username = "you@example.com";
+        String apiToken = "YOUR_API_TOKEN_OR_PASSWORD";
+
+        // 要查询的 issue 列表（示例）
+        List<String> issueKeys = Arrays.asList("PROJ-1", "PROJ-2", "PROJ-3");
+
+        JiraClient client = new JiraClient(baseUrl, username, apiToken);
+        IssueChangeAnalyzer analyzer = new IssueChangeAnalyzer();
+
+        try {
+            List<JsonNode> issues = client.getIssuesWithChangelog(issueKeys);
+            Instant now = Instant.now();
+
+            for (JsonNode issue : issues) {
+                String key = issue.path("key").asText();
+                System.out.println("Issue: " + key);
+
+                // 1) 每个状态累计时长
+                Map<String, Duration> durations = analyzer.computeStatusDurations(issue, now);
+                System.out.println("Status durations:");
+                for (Map.Entry<String, Duration> e : durations.entrySet()) {
+                    System.out.printf("  %s => %s (days=%f)\n",
+                            e.getKey(),
+                            IssueChangeAnalyzer.humanReadable(e.getValue()),
+                            (double) e.getValue().getSeconds() / (24 * 3600));
+                }
+
+                // 2) 计算从某状态结束到另一个状态开始的相隔（示例：从 'In Progress' 结束到 'Done' 开始）
+                String from = "In Progress";
+                String to = "Done";
+                List<Duration> intervals = analyzer.computeIntervalsBetweenStatuses(issue, from, to);
+                System.out.printf("Intervals from '%s' end to '%s' start: count=%d\n", from, to, intervals.size());
+                if (!intervals.isEmpty()) {
+                    double sumDays = 0;
+                    long minSec = Long.MAX_VALUE, maxSec = Long.MIN_VALUE;
+                    for (Duration d : intervals) {
+                        System.out.println("   " + IssueChangeAnalyzer.humanReadable(d) + "  (" + ((double) d.getSeconds() / 86400.0) + " days)");
+                        sumDays += (double) d.getSeconds() / 86400.0;
+                        minSec = Math.min(minSec, d.getSeconds());
+                        maxSec = Math.max(maxSec, d.getSeconds());
+                    }
+                    System.out.printf("   summary: min=%s, max=%s, avg=%.3f days\n",
+                            IssueChangeAnalyzer.humanReadable(Duration.ofSeconds(minSec)),
+                            IssueChangeAnalyzer.humanReadable(Duration.ofSeconds(maxSec)),
+                            sumDays / intervals.size());
+                }
+
+                System.out.println("---------------------------------------------------");
+            }
+        } finally {
+            client.close();
+        }
+    }
+}
+
+3) 使用说明 & 注意事项
+	1.	认证：示例使用 Basic Auth（email:apiToken base64）。如果你的 Jira 使用 cookie / OAuth，请改成对应认证方式（在 JiraClient 中设置 header）。
+	2.	性能与分页：
+	•	我在 JiraClient 中把 keys 按 50 个 chunk，然后使用 search endpoint 分页获取（maxResults=50）。如果你要查询上千条 issue，建议增大 maxResults（取决于 Jira 服务器限额）或并行请求。
+	3.	时间解析：
+	•	Jira 的时间格式通常像 2023-05-01T12:34:56.789+0000，代码处理了含毫秒/不含毫秒的两种情况，并转换为 Instant。
+	4.	初始状态的判断：
+	•	如果某 issue 没有任何 status change（没有历史），代码把创建时间到 now 算作当前状态。
+	•	如果第一个 history 的 fromString 为 null（可能是创建时的第一条 change），实现已尽量回退到合理的初始状态。
+	•	注意：极少数情况下（历史数据异常）可能需要根据你们实际数据再做细微调整。
+	5.	“某状态结束到某状态开始”的定义：
+	•	本实现对每次 status 变更 item 看作一个事件 from -> to，当遇到 from==A 的事件时，取其时间作为 A 的结束时间，并找到该事件后面第一个 to==B 的事件，计算两时间差。这样可以找到“每一次 A 结束至下一次 B 开始”的间隔。
+	•	如果你需要的是“最后一次 A 结束到第一次 B 开始”或“同一 transition（如 A->…->B）跨越的间隔”，可以基于 computeIntervalsBetweenStatuses 做小改动。
+	6.	输出：示例把 durations 打印成人类可读与以天表示的浮点数。你可以将 Map<String, Duration> 转成 CSV/Excel/数据库写入，或按你需要的格式导出。
+	7.	时区注意：我们使用 Instant（UTC）进行差值计算，时区偏移不会影响持续时长计算；若你需要以特定时区的“日历日”为单位（例如按台湾时间计算天数边界），需要把 Instant 转到 ZonedDateTime 并在日界线处做特殊处理。
+
+4) 若要扩展/提升
+	•	若要同时统计“某状态累计工时（排除周末/非工作时间）”，在累加区间时需要按日历工作时间表拆分区间（示例未实现）。
+	•	若要批量处理上千 issue，建议使用多线程批量请求并限流/退避。
+	•	若你希望输出 Excel 报表，我可以直接把代码扩展成生成 .xlsx（Apache POI）并把结果写入文件。
+
+⸻
+
+如果你愿意，我可以：
+	•	把上面代码打包成可运行的 GitHub 风格示例（带 README、运行步骤）。
+	•	或者根据你的 JIRA 实际字段（例如你们的 status 名称、时区需求、日期边界、是否要计算到某个历史截止日而不是“现在”）直接把 Main 里的示例替换成符合你工作流程的脚本。
+
+你要我继续做哪一步？（例如：把代码整理成完整仓库结构并给你下载指令，或加入工作日/非工作日计算，或把结果导成 Excel）
