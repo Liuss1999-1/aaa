@@ -11,13 +11,14 @@ Copy `lazy-jack.agent.md` to your global Copilot agents folder:
 
 ### 2. Skills
 
-Copy the four skill folders into your global Copilot skills folder:
+Copy the five skill folders into your global Copilot skills folder:
 
 ```
 ~/.copilot/skills/lazyjack-review/SKILL.md
 ~/.copilot/skills/lazyjack-audit/SKILL.md
 ~/.copilot/skills/lazyjack-debt/SKILL.md
 ~/.copilot/skills/lazyjack-super/SKILL.md
+~/.copilot/skills/lazyjack-decompose/SKILL.md
 ```
 
 On Windows: `%USERPROFILE%\.copilot\skills\`
@@ -55,6 +56,7 @@ in the Agent Picker.
 | `/debt` | Collect all `lazyjack:` shortcut markers |
 | `/super` | Engineering discipline mode (6-step process) |
 | `stop super` | Exit super mode, back to Lazy-Jack |
+| `/decompose` | Monolith→microservice split analysis + completion plan |
 
 ---
 
@@ -62,13 +64,14 @@ in the Agent Picker.
 
 ```
 lazyJack/
-├── README.md                        ← this file
-├── lazy-jack.agent.md               ← core agent (always active)
+├── README.md                           ← this file
+├── lazy-jack.agent.md                  ← core agent (always active)
 └── skills/
-    ├── lazyjack-review/SKILL.md     ← over-engineering review
-    ├── lazyjack-audit/SKILL.md      ← project health check
-    ├── lazyjack-debt/SKILL.md       ← shortcut ledger
-    └── lazyjack-super/SKILL.md      ← engineering discipline
+    ├── lazyjack-review/SKILL.md        ← over-engineering review
+    ├── lazyjack-audit/SKILL.md         ← project health check
+    ├── lazyjack-debt/SKILL.md          ← shortcut ledger
+    ├── lazyjack-super/SKILL.md         ← engineering discipline
+    └── lazyjack-decompose/SKILL.md     ← monolith→microservice split
 ```
 
 ---
@@ -83,6 +86,7 @@ Put the agent and skills in your project instead:
 <project-root>/.github/skills/lazyjack-audit/SKILL.md
 <project-root>/.github/skills/lazyjack-debt/SKILL.md
 <project-root>/.github/skills/lazyjack-super/SKILL.md
+<project-root>/.github/skills/lazyjack-decompose/SKILL.md
 ```
 
 The whole team gets Lazy-Jack automatically.
