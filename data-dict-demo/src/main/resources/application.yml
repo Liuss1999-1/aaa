@@ -1,0 +1,31 @@
+# Swagger UI: http://localhost:8080/swagger-ui/index.html
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+
+spring:
+  datasource:
+    # Oracle connection — fill in your actual host / port / SID / credentials
+    url: jdbc:oracle:thin:@//<HOST>:<PORT>/<SERVICE_NAME>
+    driver-class-name: oracle.jdbc.OracleDriver
+    username: <USERNAME>
+    password: <PASSWORD>
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:sql/init-oracle.sql
+
+mybatis:
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+  type-aliases-package: com.example.datadict.model
+
+server:
+  port: 8080
+
+logging:
+  level:
+    com.example.datadict: DEBUG

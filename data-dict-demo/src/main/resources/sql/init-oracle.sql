@@ -1,0 +1,440 @@
+-- ============================================================
+-- Data Dictionary Demo — Oracle Init Script
+-- Primary keys: UUID (32-char, generated in application layer)
+-- Run this manually: CREATE USER dict_user IDENTIFIED BY dict_pass;
+--                    GRANT CONNECT, RESOURCE TO dict_user;
+-- ============================================================
+
+-- Metadata layer: type definitions
+CREATE TABLE DICT_TYPE (
+    ID          VARCHAR2(32) PRIMARY KEY,
+    TYPE_CODE   VARCHAR2(64) NOT NULL UNIQUE,
+    TYPE_NAME   VARCHAR2(128) NOT NULL,
+    TABLE_NAME  VARCHAR2(64) NOT NULL,
+    CREATED_AT  DATE DEFAULT SYSDATE,
+    UPDATED_AT  DATE DEFAULT SYSDATE
+);
+
+-- Metadata layer: field definitions
+CREATE TABLE DICT_FIELD (
+    ID          VARCHAR2(32) PRIMARY KEY,
+    TYPE_ID     VARCHAR2(32) NOT NULL,
+    FIELD_CODE  VARCHAR2(64) NOT NULL,
+    FIELD_NAME  VARCHAR2(128) NOT NULL,
+    FIELD_TYPE  VARCHAR2(32) NOT NULL,
+    COLUMN_NAME VARCHAR2(64) NOT NULL,
+    SORT_ORDER  NUMBER(3) DEFAULT 0,
+    IS_REQUIRED CHAR(1) DEFAULT '0',
+    CREATED_AT  DATE DEFAULT SYSDATE,
+    CONSTRAINT FK_FIELD_TYPE FOREIGN KEY (TYPE_ID) REFERENCES DICT_TYPE(ID)
+);
+
+-- Tag layer
+CREATE TABLE DICT_TAG (
+    ID          VARCHAR2(32) PRIMARY KEY,
+    TAG_NAME    VARCHAR2(64) NOT NULL UNIQUE,
+    CREATED_AT  DATE DEFAULT SYSDATE
+);
+
+-- N:M entry-tag relationship
+CREATE TABLE DICT_ENTRY_TAG (
+    ID          VARCHAR2(32) PRIMARY KEY,
+    TYPE_ID     VARCHAR2(32) NOT NULL,
+    ENTRY_ID    VARCHAR2(32) NOT NULL,
+    TAG_ID      VARCHAR2(32) NOT NULL,
+    CONSTRAINT FK_ET_TYPE FOREIGN KEY (TYPE_ID) REFERENCES DICT_TYPE(ID),
+    CONSTRAINT FK_ET_TAG FOREIGN KEY (TAG_ID) REFERENCES DICT_TAG(ID),
+    CONSTRAINT UQ_ET UNIQUE (TYPE_ID, ENTRY_ID, TAG_ID)
+);
+
+-- ============================================================
+-- Physical tables (7 types, field count varies from 2 to 12)
+-- Each table MUST have: ID, ENTRY_NAME, CREATED_AT, UPDATED_AT
+-- ============================================================
+
+-- 1. Product (2 business fields)
+CREATE TABLE T_PRODUCT (
+    ID          VARCHAR2(32) PRIMARY KEY,
+    ENTRY_NAME  VARCHAR2(256) NOT NULL,
+    C_PRICE     NUMBER(18,4),
+    C_DESC      VARCHAR2(4000),
+    CREATED_AT  DATE DEFAULT SYSDATE,
+    UPDATED_AT  DATE DEFAULT SYSDATE
+);
+
+-- 2. Customer (7 business fields)
+CREATE TABLE T_CUSTOMER (
+    ID             VARCHAR2(32) PRIMARY KEY,
+    ENTRY_NAME     VARCHAR2(256) NOT NULL,
+    C_PHONE        VARCHAR2(20),
+    C_EMAIL        VARCHAR2(128),
+    C_COMPANY      VARCHAR2(256),
+    C_AGE          NUMBER(3),
+    C_VIP_LEVEL    NUMBER(2),
+    C_BIRTHDAY     DATE,
+    C_IS_ACTIVE    CHAR(1),
+    CREATED_AT     DATE DEFAULT SYSDATE,
+    UPDATED_AT     DATE DEFAULT SYSDATE
+);
+
+-- 3. Contract (8 business fields)
+CREATE TABLE T_CONTRACT (
+    ID             VARCHAR2(32) PRIMARY KEY,
+    ENTRY_NAME     VARCHAR2(256) NOT NULL,
+    C_PARTY_A      VARCHAR2(256),
+    C_PARTY_B      VARCHAR2(256),
+    C_AMOUNT       NUMBER(18,2),
+    C_SIGN_DATE    DATE,
+    C_EXPIRE_DATE  DATE,
+    C_IS_SEALED    CHAR(1),
+    C_FILE_URL     VARCHAR2(512),
+    C_REMARK       VARCHAR2(4000),
+    CREATED_AT     DATE DEFAULT SYSDATE,
+    UPDATED_AT     DATE DEFAULT SYSDATE
+);
+
+-- 4. Field Option (7 business fields)
+CREATE TABLE T_FIELD_OPTION (
+    ID             VARCHAR2(32) PRIMARY KEY,
+    ENTRY_NAME     VARCHAR2(256) NOT NULL,
+    C_FIELD_ID     VARCHAR2(64),
+    C_FIELD_NAME   VARCHAR2(128),
+    C_VALUE        VARCHAR2(256),
+    C_LABEL        VARCHAR2(256),
+    C_DESCRIPTION  VARCHAR2(1000),
+    C_SORT_ORDER   NUMBER(3),
+    C_IS_ACTIVE    CHAR(1),
+    CREATED_AT     DATE DEFAULT SYSDATE,
+    UPDATED_AT     DATE DEFAULT SYSDATE
+);
+
+-- 5. Field Mapping (5 business fields)
+CREATE TABLE T_FIELD_MAPPING (
+    ID                VARCHAR2(32) PRIMARY KEY,
+    ENTRY_NAME        VARCHAR2(256) NOT NULL,
+    C_SITE_ID         VARCHAR2(64),
+    C_LOCAL_FIELD     VARCHAR2(128),
+    C_REMOTE_FIELD_ID VARCHAR2(128),
+    C_REMOTE_FIELD_NAME VARCHAR2(256),
+    C_FIELD_TYPE      VARCHAR2(64),
+    CREATED_AT        DATE DEFAULT SYSDATE,
+    UPDATED_AT        DATE DEFAULT SYSDATE
+);
+
+-- 6. App Code (10 business fields)
+CREATE TABLE T_APP_CODE (
+    ID             VARCHAR2(32) PRIMARY KEY,
+    ENTRY_NAME     VARCHAR2(256) NOT NULL,
+    C_APP_CODE     VARCHAR2(64),
+    C_APP_NAME     VARCHAR2(128),
+    C_DESCRIPTION  VARCHAR2(1000),
+    C_OWNER        VARCHAR2(64),
+    C_TEAM         VARCHAR2(128),
+    C_LANGUAGE     VARCHAR2(32),
+    C_REPO_URL     VARCHAR2(512),
+    C_DEPLOY_ENV   VARCHAR2(64),
+    C_STATUS       VARCHAR2(32),
+    C_RELEASE_DATE DATE,
+    CREATED_AT     DATE DEFAULT SYSDATE,
+    UPDATED_AT     DATE DEFAULT SYSDATE
+);
+
+-- 8. Approver (6 business fields — Jira user with permission groups via tags)
+CREATE TABLE T_APPROVER (
+    ID               VARCHAR2(32) PRIMARY KEY,
+    ENTRY_NAME       VARCHAR2(256) NOT NULL,
+    C_JIRA_ACCOUNT   VARCHAR2(128),
+    C_EMAIL          VARCHAR2(128),
+    C_DISPLAY_NAME   VARCHAR2(256),
+    C_TITLE          VARCHAR2(256),
+    C_DEPARTMENT     VARCHAR2(256),
+    C_IS_ACTIVE      CHAR(1),
+    CREATED_AT       DATE DEFAULT SYSDATE,
+    UPDATED_AT       DATE DEFAULT SYSDATE
+);
+
+-- 7. CLA Project (12 business fields)
+CREATE TABLE T_CLA_PROJECT (
+    ID               VARCHAR2(32) PRIMARY KEY,
+    ENTRY_NAME       VARCHAR2(256) NOT NULL,
+    C_PROJECT_CODE   VARCHAR2(64),
+    C_ORGANIZATION   VARCHAR2(256),
+    C_MAINTAINER     VARCHAR2(64),
+    C_LICENSE        VARCHAR2(128),
+    C_REPO_URL       VARCHAR2(512),
+    C_SIGN_DATE      DATE,
+    C_EXPIRE_DATE    DATE,
+    C_APPROVAL_STATUS VARCHAR2(32),
+    C_CLA_TYPE       VARCHAR2(32),
+    C_SIGNATORY_COUNT NUMBER(10),
+    C_REMARK         VARCHAR2(4000),
+    CREATED_AT       DATE DEFAULT SYSDATE,
+    UPDATED_AT       DATE DEFAULT SYSDATE
+);
+
+-- 9. Tollgate SAID (22 business fields — application SAID metadata)
+CREATE TABLE T_TOLLGATE_SAID (
+    ID                        VARCHAR2(32) PRIMARY KEY,
+    ENTRY_NAME                VARCHAR2(256) NOT NULL,
+    C_SAID                    VARCHAR2(64),
+    C_KEY_VAL                 VARCHAR2(64),
+    C_NAME                    VARCHAR2(255),
+    C_STATUS                  VARCHAR2(64),
+    C_IT_SENIOR_MGR           VARCHAR2(255),
+    C_IT_CIO_DIRECT           VARCHAR2(255),
+    C_IT_AUTH_SVP_MD          VARCHAR2(255),
+    C_APP_CODE                VARCHAR2(4000),
+    C_COMPONENT_TYPE          VARCHAR2(4000),
+    C_APP_TYPE                VARCHAR2(4000),
+    C_APP_SUBTYPE             VARCHAR2(4000),
+    C_L2L                     VARCHAR2(4000),
+    C_CHG_EXEMPTION           VARCHAR2(4000),
+    C_E2E_PROCESS_MAP         VARCHAR2(4000),
+    C_TIER                    VARCHAR2(4000),
+    C_BIZ_ORG                 VARCHAR2(4000),
+    C_AIW_STATUS              VARCHAR2(4000),
+    C_PENETRATION_TEST        VARCHAR2(4000),
+    C_SONAR_QUBE              VARCHAR2(4000),
+    C_FIN_CRIME_COMPLIANCE    VARCHAR2(4000),
+    CREATED_AT                DATE DEFAULT SYSDATE,
+    UPDATED_AT                DATE DEFAULT SYSDATE
+);
+
+-- 10. Tollgate Clarity ID (10 business fields — project Clarity ID mapping)
+CREATE TABLE T_TOLLGATE_CLARITY (
+    ID               VARCHAR2(32) PRIMARY KEY,
+    ENTRY_NAME       VARCHAR2(256) NOT NULL,
+    C_PROJECT_ID     VARCHAR2(64),
+    C_PROJECT_NAME   VARCHAR2(255),
+    C_PROJECT_TYPE   VARCHAR2(4000),
+    C_PROGRESS       VARCHAR2(4000),
+    C_STATUS         VARCHAR2(4000),
+    C_KEY_VAL        VARCHAR2(64),
+    C_DEPARTMENT     VARCHAR2(4000),
+    CREATED_AT       DATE DEFAULT SYSDATE,
+    UPDATED_AT       DATE DEFAULT SYSDATE
+);
+
+-- ============================================================
+-- Idempotent cleanup (truncate before re-seeding)
+-- ============================================================
+DELETE FROM DICT_ENTRY_TAG;
+DELETE FROM T_PRODUCT;
+DELETE FROM T_CUSTOMER;
+DELETE FROM T_CONTRACT;
+DELETE FROM T_FIELD_OPTION;
+DELETE FROM T_FIELD_MAPPING;
+DELETE FROM T_APP_CODE;
+DELETE FROM T_CLA_PROJECT;
+DELETE FROM T_APPROVER;
+DELETE FROM T_TOLLGATE_SAID;
+DELETE FROM T_TOLLGATE_CLARITY;
+DELETE FROM DICT_TAG;
+DELETE FROM DICT_FIELD;
+DELETE FROM DICT_TYPE;
+COMMIT;
+
+-- ============================================================
+-- Register 7 types
+-- ============================================================
+INSERT INTO DICT_TYPE (ID, TYPE_CODE, TYPE_NAME, TABLE_NAME) VALUES ('type001', 'PRODUCT',       'Product',          'T_PRODUCT');
+INSERT INTO DICT_TYPE (ID, TYPE_CODE, TYPE_NAME, TABLE_NAME) VALUES ('type002', 'CUSTOMER',      'Customer',         'T_CUSTOMER');
+INSERT INTO DICT_TYPE (ID, TYPE_CODE, TYPE_NAME, TABLE_NAME) VALUES ('type003', 'CONTRACT',      'Contract',         'T_CONTRACT');
+INSERT INTO DICT_TYPE (ID, TYPE_CODE, TYPE_NAME, TABLE_NAME) VALUES ('type004', 'FIELD_OPTION',  'Field Option',     'T_FIELD_OPTION');
+INSERT INTO DICT_TYPE (ID, TYPE_CODE, TYPE_NAME, TABLE_NAME) VALUES ('type005', 'FIELD_MAPPING', 'Field Mapping',    'T_FIELD_MAPPING');
+INSERT INTO DICT_TYPE (ID, TYPE_CODE, TYPE_NAME, TABLE_NAME) VALUES ('type006', 'APP_CODE',      'App Code',         'T_APP_CODE');
+INSERT INTO DICT_TYPE (ID, TYPE_CODE, TYPE_NAME, TABLE_NAME) VALUES ('type007', 'CLA_PROJECT',   'CLA Project',      'T_CLA_PROJECT');
+INSERT INTO DICT_TYPE (ID, TYPE_CODE, TYPE_NAME, TABLE_NAME) VALUES ('type008', 'APPROVER',          'Approver',             'T_APPROVER');
+INSERT INTO DICT_TYPE (ID, TYPE_CODE, TYPE_NAME, TABLE_NAME) VALUES ('type009', 'TOLLGATE_SAID',     'Tollgate SAID',        'T_TOLLGATE_SAID');
+INSERT INTO DICT_TYPE (ID, TYPE_CODE, TYPE_NAME, TABLE_NAME) VALUES ('type010', 'TOLLGATE_CLARITY',  'Tollgate Clarity ID',  'T_TOLLGATE_CLARITY');
+
+-- ============================================================
+-- Register field definitions (field counts: 2/7/8/7/5/10/12)
+-- ============================================================
+
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f001', 'type001', 'price',       'Price',       'NUMBER', 'C_PRICE', 1, '1');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f002', 'type001', 'description', 'Description', 'TEXT',   'C_DESC',  2, '0');
+
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f003', 'type002', 'phone',      'Phone',       'TEXT',   'C_PHONE',     1, '1');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f004', 'type002', 'email',      'Email',       'TEXT',   'C_EMAIL',     2, '0');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f005', 'type002', 'company',    'Company',     'TEXT',   'C_COMPANY',   3, '0');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f006', 'type002', 'age',        'Age',         'NUMBER', 'C_AGE',       4, '0');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f007', 'type002', 'vipLevel',   'VIP Level',   'NUMBER', 'C_VIP_LEVEL', 5, '0');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f008', 'type002', 'birthday',   'Birthday',    'DATE',   'C_BIRTHDAY',  6, '0');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f009', 'type002', 'isActive',   'Is Active',   'BOOL',   'C_IS_ACTIVE', 7, '1');
+
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f010', 'type003', 'partyA',     'Party A',     'TEXT',   'C_PARTY_A',     1, '1');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f011', 'type003', 'partyB',     'Party B',     'TEXT',   'C_PARTY_B',     2, '1');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f012', 'type003', 'amount',     'Amount',      'NUMBER', 'C_AMOUNT',      3, '1');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f013', 'type003', 'signDate',   'Sign Date',   'DATE',   'C_SIGN_DATE',   4, '1');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f014', 'type003', 'expireDate', 'Expiry Date', 'DATE',   'C_EXPIRE_DATE', 5, '0');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f015', 'type003', 'isSealed',   'Is Sealed',   'BOOL',   'C_IS_SEALED',   6, '0');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f016', 'type003', 'fileUrl',    'File URL',    'TEXT',   'C_FILE_URL',    7, '0');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f017', 'type003', 'remark',     'Remark',      'TEXT',   'C_REMARK',      8, '0');
+
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f018', 'type004', 'fieldId',     'Field ID',       'TEXT',   'C_FIELD_ID',    1, '1');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f019', 'type004', 'fieldName',   'Field Name',     'TEXT',   'C_FIELD_NAME',  2, '0');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f020', 'type004', 'label',       'Label',          'TEXT',   'C_LABEL',       3, '1');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f021', 'type004', 'value',       'Value',          'TEXT',   'C_VALUE',       4, '1');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f022', 'type004', 'description', 'Description',    'TEXT',   'C_DESCRIPTION', 5, '0');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f023', 'type004', 'sortOrder',   'Sort Order',     'NUMBER', 'C_SORT_ORDER',  6, '0');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f024', 'type004', 'isActive',    'Is Active',      'BOOL',   'C_IS_ACTIVE',   7, '1');
+
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f025', 'type005', 'siteId',          'Site ID',             'TEXT', 'C_SITE_ID',          1, '1');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f026', 'type005', 'localField',      'Local Field Name',     'TEXT', 'C_LOCAL_FIELD',      2, '1');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f027', 'type005', 'remoteFieldId',   'Remote Field ID',      'TEXT', 'C_REMOTE_FIELD_ID',  3, '1');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f028', 'type005', 'remoteFieldName', 'Remote Field Name',    'TEXT', 'C_REMOTE_FIELD_NAME',4, '0');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f029', 'type005', 'fieldType',       'Field Type',           'TEXT', 'C_FIELD_TYPE',       5, '0');
+
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f030', 'type006', 'appCode',     'App Code',       'TEXT',   'C_APP_CODE',     1, '1');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f031', 'type006', 'appName',     'App Name',       'TEXT',   'C_APP_NAME',     2, '1');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f032', 'type006', 'description', 'Description',    'TEXT',   'C_DESCRIPTION',  3, '0');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f033', 'type006', 'owner',       'Owner',          'TEXT',   'C_OWNER',        4, '1');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f034', 'type006', 'team',        'Team',           'TEXT',   'C_TEAM',         5, '0');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f035', 'type006', 'language',    'Language',       'TEXT',   'C_LANGUAGE',     6, '0');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f036', 'type006', 'repoUrl',     'Repository URL', 'TEXT',   'C_REPO_URL',     7, '0');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f037', 'type006', 'deployEnv',   'Deploy Env',     'TEXT',   'C_DEPLOY_ENV',   8, '0');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f038', 'type006', 'status',      'Status',         'TEXT',   'C_STATUS',       9, '1');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f039', 'type006', 'releaseDate', 'Release Date',   'DATE',   'C_RELEASE_DATE', 10, '0');
+
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f040', 'type007', 'projectCode',     'Project Code',       'TEXT',   'C_PROJECT_CODE',     1, '1');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f041', 'type007', 'organization',    'Organization',       'TEXT',   'C_ORGANIZATION',     2, '1');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f042', 'type007', 'maintainer',      'Maintainer',         'TEXT',   'C_MAINTAINER',       3, '1');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f043', 'type007', 'license',         'License',            'TEXT',   'C_LICENSE',          4, '0');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f044', 'type007', 'repoUrl',         'Repository URL',     'TEXT',   'C_REPO_URL',         5, '0');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f045', 'type007', 'signDate',        'Sign Date',          'DATE',   'C_SIGN_DATE',        6, '0');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f046', 'type007', 'expireDate',      'Expiry Date',        'DATE',   'C_EXPIRE_DATE',      7, '0');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f047', 'type007', 'approvalStatus',  'Approval Status',    'TEXT',   'C_APPROVAL_STATUS',  8, '1');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f048', 'type007', 'claType',         'CLA Type',           'TEXT',   'C_CLA_TYPE',          9, '1');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f049', 'type007', 'signatoryCount',  'Signatory Count',    'NUMBER', 'C_SIGNATORY_COUNT',  10, '0');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f050', 'type007', 'remark',          'Remark',             'TEXT',   'C_REMARK',           11, '0');
+
+-- APPROVER: 6 fields
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f051', 'type008', 'jiraAccount',  'Jira Account',  'TEXT',   'C_JIRA_ACCOUNT',  1, '1');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f052', 'type008', 'email',        'Email',         'TEXT',   'C_EMAIL',         2, '0');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f053', 'type008', 'displayName',  'Display Name',  'TEXT',   'C_DISPLAY_NAME',  3, '1');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f054', 'type008', 'title',        'Title',         'TEXT',   'C_TITLE',         4, '0');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f055', 'type008', 'department',   'Department',    'TEXT',   'C_DEPARTMENT',    5, '0');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f056', 'type008', 'isActive',     'Is Active',            'BOOL',   'C_IS_ACTIVE',            6, '1');
+
+-- TOLLGATE_SAID: 22 fields
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f057', 'type009', 'said',                  'SAID',                  'TEXT',   'C_SAID',                  1, '1');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f058', 'type009', 'keyVal',                'Key Value',             'TEXT',   'C_KEY_VAL',               2, '0');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f059', 'type009', 'name',                  'Name',                  'TEXT',   'C_NAME',                  3, '1');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f060', 'type009', 'status',                'Status',                'TEXT',   'C_STATUS',                4, '0');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f061', 'type009', 'itSeniorMgr',           'IT Senior Manager',     'TEXT',   'C_IT_SENIOR_MGR',         5, '0');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f062', 'type009', 'itCioDirect',           'IT CIO Direct',         'TEXT',   'C_IT_CIO_DIRECT',         6, '0');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f063', 'type009', 'itAuthSvpMd',           'IT Auth SVP/MD',        'TEXT',   'C_IT_AUTH_SVP_MD',        7, '0');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f064', 'type009', 'appCode',               'App Code',              'TEXT',   'C_APP_CODE',              8, '0');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f065', 'type009', 'componentType',         'Component Type',        'TEXT',   'C_COMPONENT_TYPE',        9, '0');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f066', 'type009', 'appType',               'App Type',              'TEXT',   'C_APP_TYPE',             10, '0');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f067', 'type009', 'appSubtype',            'App Subtype',           'TEXT',   'C_APP_SUBTYPE',          11, '0');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f068', 'type009', 'l2l',                   'L2L',                   'TEXT',   'C_L2L',                  12, '0');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f069', 'type009', 'chgExemption',          'CHG Exemption',         'TEXT',   'C_CHG_EXEMPTION',        13, '0');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f070', 'type009', 'e2eProcessMap',         'E2E Process Map',       'TEXT',   'C_E2E_PROCESS_MAP',      14, '0');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f071', 'type009', 'tier',                  'Tier',                  'TEXT',   'C_TIER',                 15, '0');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f072', 'type009', 'bizOrg',                'Business Org',          'TEXT',   'C_BIZ_ORG',              16, '0');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f073', 'type009', 'aiwStatus',             'AIW Status',            'TEXT',   'C_AIW_STATUS',           17, '0');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f074', 'type009', 'penetrationTest',       'Penetration Test',      'TEXT',   'C_PENETRATION_TEST',     18, '0');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f075', 'type009', 'sonarQube',             'Sonar Qube',            'TEXT',   'C_SONAR_QUBE',           19, '0');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f076', 'type009', 'finCrimeCompliance',    'Finance Crime Compliance','TEXT','C_FIN_CRIME_COMPLIANCE', 20, '0');
+
+-- TOLLGATE_CLARITY: 8 fields
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f077', 'type010', 'projectId',      'Project ID',      'TEXT',   'C_PROJECT_ID',      1, '1');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f078', 'type010', 'projectName',    'Project Name',    'TEXT',   'C_PROJECT_NAME',    2, '1');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f079', 'type010', 'projectType',    'Project Type',    'TEXT',   'C_PROJECT_TYPE',    3, '0');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f080', 'type010', 'progress',       'Progress',        'TEXT',   'C_PROGRESS',        4, '0');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f081', 'type010', 'status',         'Status',          'TEXT',   'C_STATUS',          5, '0');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f082', 'type010', 'keyVal',         'Key Value',       'TEXT',   'C_KEY_VAL',         6, '0');
+INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) VALUES ('f083', 'type010', 'department',     'Department',      'TEXT',   'C_DEPARTMENT',      7, '0');
+
+-- ============================================================
+-- Tags
+-- ============================================================
+INSERT INTO DICT_TAG (ID, TAG_NAME) VALUES ('tag001', 'Hot');
+INSERT INTO DICT_TAG (ID, TAG_NAME) VALUES ('tag002', 'Cold');
+INSERT INTO DICT_TAG (ID, TAG_NAME) VALUES ('tag003', 'VIP');
+INSERT INTO DICT_TAG (ID, TAG_NAME) VALUES ('tag004', 'Important');
+INSERT INTO DICT_TAG (ID, TAG_NAME) VALUES ('tag005', 'Expired');
+INSERT INTO DICT_TAG (ID, TAG_NAME) VALUES ('tag_admin', 'Admin');
+INSERT INTO DICT_TAG (ID, TAG_NAME) VALUES ('tag_dev', 'Developer');
+INSERT INTO DICT_TAG (ID, TAG_NAME) VALUES ('tag_viewer', 'Viewer');
+
+-- ============================================================
+-- Sample data
+-- ============================================================
+
+INSERT INTO T_PRODUCT (ID, ENTRY_NAME, C_PRICE, C_DESC) VALUES ('p001', 'iPhone 15',       6999, 'Apple flagship phone');
+INSERT INTO T_PRODUCT (ID, ENTRY_NAME, C_PRICE, C_DESC) VALUES ('p002', 'Huawei Mate 60',  5999, 'Huawei flagship phone');
+INSERT INTO T_PRODUCT (ID, ENTRY_NAME, C_PRICE, C_DESC) VALUES ('p003', 'Xiaomi 14',       3999, 'Xiaomi annual flagship');
+
+INSERT INTO T_CUSTOMER (ID, ENTRY_NAME, C_PHONE, C_EMAIL, C_COMPANY, C_AGE, C_VIP_LEVEL, C_BIRTHDAY, C_IS_ACTIVE) VALUES ('c001', 'Alice', '13800138000', 'alice@example.com',   'Alibaba',    28, 3, DATE '1998-05-15', '1');
+INSERT INTO T_CUSTOMER (ID, ENTRY_NAME, C_PHONE, C_EMAIL, C_COMPANY, C_AGE, C_VIP_LEVEL, C_BIRTHDAY, C_IS_ACTIVE) VALUES ('c002', 'Bob',   '13900139000', 'bob@example.com',     'Tencent',    35, 5, DATE '1991-08-20', '1');
+INSERT INTO T_CUSTOMER (ID, ENTRY_NAME, C_PHONE, C_EMAIL, C_COMPANY, C_AGE, C_VIP_LEVEL, C_BIRTHDAY, C_IS_ACTIVE) VALUES ('c003', 'Carol', '13700137000', 'carol@example.com',   'ByteDance',  42, 2, DATE '1984-11-03', '0');
+
+INSERT INTO T_CONTRACT (ID, ENTRY_NAME, C_PARTY_A, C_PARTY_B, C_AMOUNT, C_SIGN_DATE, C_EXPIRE_DATE, C_IS_SEALED, C_FILE_URL, C_REMARK) VALUES ('ct001', 'Annual Procurement Agreement', 'Company A', 'Company B', 500000.00, DATE '2026-01-15', DATE '2026-12-31', '1', 'https://oss.example.com/file/ct001.pdf', 'Sealed and archived');
+INSERT INTO T_CONTRACT (ID, ENTRY_NAME, C_PARTY_A, C_PARTY_B, C_AMOUNT, C_SIGN_DATE, C_EXPIRE_DATE, C_IS_SEALED, C_FILE_URL, C_REMARK) VALUES ('ct002', 'Technical Service Contract',   'Company C', 'Company D', 120000.00, DATE '2026-03-01', DATE '2027-02-28', '0', NULL,                                      'Awaiting both parties seal');
+
+INSERT INTO T_FIELD_OPTION (ID, ENTRY_NAME, C_FIELD_ID, C_FIELD_NAME, C_VALUE, C_LABEL, C_DESCRIPTION, C_SORT_ORDER, C_IS_ACTIVE) VALUES ('fo001', 'Priority-High',   'customfield_10001', 'priority', 'high',   'High',   'Urgent attention',   1, '1');
+INSERT INTO T_FIELD_OPTION (ID, ENTRY_NAME, C_FIELD_ID, C_FIELD_NAME, C_VALUE, C_LABEL, C_DESCRIPTION, C_SORT_ORDER, C_IS_ACTIVE) VALUES ('fo002', 'Priority-Medium', 'customfield_10001', 'priority', 'medium', 'Medium', 'Normal processing',  2, '1');
+INSERT INTO T_FIELD_OPTION (ID, ENTRY_NAME, C_FIELD_ID, C_FIELD_NAME, C_VALUE, C_LABEL, C_DESCRIPTION, C_SORT_ORDER, C_IS_ACTIVE) VALUES ('fo003', 'Priority-Low',    'customfield_10001', 'priority', 'low',    'Low',    'Can be postponed',   3, '1');
+INSERT INTO T_FIELD_OPTION (ID, ENTRY_NAME, C_FIELD_ID, C_FIELD_NAME, C_VALUE, C_LABEL, C_DESCRIPTION, C_SORT_ORDER, C_IS_ACTIVE) VALUES ('fo004', 'Status-Open',     'customfield_10002', 'status',   'open',   'Open',   'Default on create',  1, '1');
+INSERT INTO T_FIELD_OPTION (ID, ENTRY_NAME, C_FIELD_ID, C_FIELD_NAME, C_VALUE, C_LABEL, C_DESCRIPTION, C_SORT_ORDER, C_IS_ACTIVE) VALUES ('fo005', 'Status-Closed',   'customfield_10002', 'status',   'closed', 'Closed', 'Terminal state',     2, '1');
+
+INSERT INTO T_FIELD_MAPPING (ID, ENTRY_NAME, C_SITE_ID, C_LOCAL_FIELD, C_REMOTE_FIELD_ID, C_REMOTE_FIELD_NAME, C_FIELD_TYPE) VALUES ('fm001', 'Priority-JiraProd',  'jira-prod',  'priority', 'customfield_10001', 'Priority', 'select');
+INSERT INTO T_FIELD_MAPPING (ID, ENTRY_NAME, C_SITE_ID, C_LOCAL_FIELD, C_REMOTE_FIELD_ID, C_REMOTE_FIELD_NAME, C_FIELD_TYPE) VALUES ('fm002', 'Status-JiraProd',    'jira-prod',  'status',   'customfield_10002', 'Status',   'select');
+INSERT INTO T_FIELD_MAPPING (ID, ENTRY_NAME, C_SITE_ID, C_LOCAL_FIELD, C_REMOTE_FIELD_ID, C_REMOTE_FIELD_NAME, C_FIELD_TYPE) VALUES ('fm003', 'Priority-JiraTest',  'jira-test',  'priority', 'customfield_20005', 'Priority', 'select');
+INSERT INTO T_FIELD_MAPPING (ID, ENTRY_NAME, C_SITE_ID, C_LOCAL_FIELD, C_REMOTE_FIELD_ID, C_REMOTE_FIELD_NAME, C_FIELD_TYPE) VALUES ('fm004', 'Status-JiraTest',    'jira-test',  'status',   'customfield_20008', 'Status',   'select');
+
+INSERT INTO T_APP_CODE (ID, ENTRY_NAME, C_APP_CODE, C_APP_NAME, C_DESCRIPTION, C_OWNER, C_TEAM, C_LANGUAGE, C_REPO_URL, C_DEPLOY_ENV, C_STATUS, C_RELEASE_DATE) VALUES ('ac001', 'User Service',    'USER-SERVICE',   'User Service',   'Unified user management',  'Alice', 'Infra', 'Java',   'https://git.example.com/user-svc',  'K8s', 'Online',     DATE '2025-03-15');
+INSERT INTO T_APP_CODE (ID, ENTRY_NAME, C_APP_CODE, C_APP_NAME, C_DESCRIPTION, C_OWNER, C_TEAM, C_LANGUAGE, C_REPO_URL, C_DEPLOY_ENV, C_STATUS, C_RELEASE_DATE) VALUES ('ac002', 'API Gateway',     'GATEWAY',        'API Gateway',    'Traffic ingress gateway',  'Bob',   'Infra', 'Go',     'https://git.example.com/gateway',    'K8s', 'Online',     DATE '2025-06-01');
+INSERT INTO T_APP_CODE (ID, ENTRY_NAME, C_APP_CODE, C_APP_NAME, C_DESCRIPTION, C_OWNER, C_TEAM, C_LANGUAGE, C_REPO_URL, C_DEPLOY_ENV, C_STATUS, C_RELEASE_DATE) VALUES ('ac003', 'Data Analytics',  'DATA-ANALYTICS', 'Data Platform',  'BI and analytics platform', 'Carol', 'Data',  'Python', 'https://git.example.com/data-plat', 'ECS',  'Developing', NULL);
+
+INSERT INTO T_CLA_PROJECT (ID, ENTRY_NAME, C_PROJECT_CODE, C_ORGANIZATION, C_MAINTAINER, C_LICENSE, C_REPO_URL, C_SIGN_DATE, C_EXPIRE_DATE, C_APPROVAL_STATUS, C_CLA_TYPE, C_SIGNATORY_COUNT, C_REMARK) VALUES ('cp001', 'Open Source Sky',     'SKY-CLA',     'Apache',  'Alice', 'Apache 2.0', 'https://git.example.com/sky',      DATE '2025-01-10', DATE '2026-01-10', 'Approved',  'Corporate CLA', 45,  'Annual renewal done');
+INSERT INTO T_CLA_PROJECT (ID, ENTRY_NAME, C_PROJECT_CODE, C_ORGANIZATION, C_MAINTAINER, C_LICENSE, C_REPO_URL, C_SIGN_DATE, C_EXPIRE_DATE, C_APPROVAL_STATUS, C_CLA_TYPE, C_SIGNATORY_COUNT, C_REMARK) VALUES ('cp002', 'Open Source Ocean',   'OCEAN-CLA',   'CNCF',    'Bob',   'MIT',        'https://git.example.com/ocean',    DATE '2025-06-20', DATE '2026-06-20', 'Approved',  'Individual CLA',120, NULL);
+INSERT INTO T_CLA_PROJECT (ID, ENTRY_NAME, C_PROJECT_CODE, C_ORGANIZATION, C_MAINTAINER, C_LICENSE, C_REPO_URL, C_SIGN_DATE, C_EXPIRE_DATE, C_APPROVAL_STATUS, C_CLA_TYPE, C_SIGNATORY_COUNT, C_REMARK) VALUES ('cp003', 'Pending Project River','RIVER-CLA',  'Eclipse', 'Carol', 'EPL-2.0',    'https://git.example.com/river',    NULL,             NULL,            'Pending',   'Corporate CLA', 0,   'Awaiting legal review');
+
+-- Approver sample data (permission groups via tags: Admin / Developer / Viewer)
+INSERT INTO T_APPROVER (ID, ENTRY_NAME, C_JIRA_ACCOUNT, C_EMAIL, C_DISPLAY_NAME, C_TITLE, C_DEPARTMENT, C_IS_ACTIVE) VALUES ('ap001', 'Alice Wang',  'alice-wang',  'alice@example.com',   'Alice Wang',  'Senior Engineer', 'Engineering', '1');
+INSERT INTO T_APPROVER (ID, ENTRY_NAME, C_JIRA_ACCOUNT, C_EMAIL, C_DISPLAY_NAME, C_TITLE, C_DEPARTMENT, C_IS_ACTIVE) VALUES ('ap002', 'Bob Li',      'bob-li',      'bob@example.com',     'Bob Li',      'Engineering Lead', 'Engineering', '1');
+INSERT INTO T_APPROVER (ID, ENTRY_NAME, C_JIRA_ACCOUNT, C_EMAIL, C_DISPLAY_NAME, C_TITLE, C_DEPARTMENT, C_IS_ACTIVE) VALUES ('ap003', 'Carol Zhang', 'carol-zhang', 'carol@example.com',   'Carol Zhang', 'QA Engineer',      'QA',           '1');
+INSERT INTO T_APPROVER (ID, ENTRY_NAME, C_JIRA_ACCOUNT, C_EMAIL, C_DISPLAY_NAME, C_TITLE, C_DEPARTMENT, C_IS_ACTIVE) VALUES ('ap004', 'David Chen',  'david-chen',  'david@example.com',   'David Chen',  'Intern',           'Engineering', '1');
+
+-- Tollgate SAID sample
+INSERT INTO T_TOLLGATE_SAID (ID, ENTRY_NAME, C_SAID, C_KEY_VAL, C_NAME, C_STATUS, C_APP_CODE, C_TIER) VALUES ('ts001', 'App Alpha',  'SAID-001', 'KEY-001', 'Application Alpha', 'Active',    'ALPHA-APP', 'Tier 1');
+INSERT INTO T_TOLLGATE_SAID (ID, ENTRY_NAME, C_SAID, C_KEY_VAL, C_NAME, C_STATUS, C_APP_CODE, C_TIER) VALUES ('ts002', 'App Beta',   'SAID-002', 'KEY-002', 'Application Beta',  'Inactive',  'BETA-APP',  'Tier 2');
+
+-- Tollgate Clarity sample
+INSERT INTO T_TOLLGATE_CLARITY (ID, ENTRY_NAME, C_PROJECT_ID, C_PROJECT_NAME, C_PROJECT_TYPE, C_STATUS, C_KEY_VAL) VALUES ('tc001', 'Project X', 'PJ-001', 'Project Alpha', 'Internal', 'On Track', 'KEY-PJ-001');
+INSERT INTO T_TOLLGATE_CLARITY (ID, ENTRY_NAME, C_PROJECT_ID, C_PROJECT_NAME, C_PROJECT_TYPE, C_STATUS, C_KEY_VAL) VALUES ('tc002', 'Project Y', 'PJ-002', 'Project Beta',  'External', 'At Risk', 'KEY-PJ-002');
+
+-- ============================================================
+-- Entry-tag associations
+-- ============================================================
+INSERT INTO DICT_ENTRY_TAG (ID, TYPE_ID, ENTRY_ID, TAG_ID) VALUES ('et01', 'type001', 'p001', 'tag001');
+INSERT INTO DICT_ENTRY_TAG (ID, TYPE_ID, ENTRY_ID, TAG_ID) VALUES ('et02', 'type001', 'p001', 'tag003');
+INSERT INTO DICT_ENTRY_TAG (ID, TYPE_ID, ENTRY_ID, TAG_ID) VALUES ('et03', 'type001', 'p002', 'tag001');
+INSERT INTO DICT_ENTRY_TAG (ID, TYPE_ID, ENTRY_ID, TAG_ID) VALUES ('et04', 'type002', 'c001', 'tag003');
+INSERT INTO DICT_ENTRY_TAG (ID, TYPE_ID, ENTRY_ID, TAG_ID) VALUES ('et05', 'type002', 'c001', 'tag004');
+INSERT INTO DICT_ENTRY_TAG (ID, TYPE_ID, ENTRY_ID, TAG_ID) VALUES ('et06', 'type002', 'c002', 'tag004');
+INSERT INTO DICT_ENTRY_TAG (ID, TYPE_ID, ENTRY_ID, TAG_ID) VALUES ('et07', 'type003', 'ct001', 'tag004');
+INSERT INTO DICT_ENTRY_TAG (ID, TYPE_ID, ENTRY_ID, TAG_ID) VALUES ('et08', 'type003', 'ct002', 'tag002');
+INSERT INTO DICT_ENTRY_TAG (ID, TYPE_ID, ENTRY_ID, TAG_ID) VALUES ('et09', 'type004', 'fo001', 'tag001');
+INSERT INTO DICT_ENTRY_TAG (ID, TYPE_ID, ENTRY_ID, TAG_ID) VALUES ('et10', 'type005', 'fm001', 'tag004');
+INSERT INTO DICT_ENTRY_TAG (ID, TYPE_ID, ENTRY_ID, TAG_ID) VALUES ('et11', 'type006', 'ac001', 'tag001');
+INSERT INTO DICT_ENTRY_TAG (ID, TYPE_ID, ENTRY_ID, TAG_ID) VALUES ('et12', 'type006', 'ac001', 'tag004');
+INSERT INTO DICT_ENTRY_TAG (ID, TYPE_ID, ENTRY_ID, TAG_ID) VALUES ('et13', 'type007', 'cp001', 'tag004');
+INSERT INTO DICT_ENTRY_TAG (ID, TYPE_ID, ENTRY_ID, TAG_ID) VALUES ('et14', 'type007', 'cp003', 'tag002');
+INSERT INTO DICT_ENTRY_TAG (ID, TYPE_ID, ENTRY_ID, TAG_ID) VALUES ('et15', 'type007', 'cp003', 'tag005');
+
+-- Approver permission-group tags (Admin / Developer / Viewer via DICT_TAG)
+INSERT INTO DICT_ENTRY_TAG (ID, TYPE_ID, ENTRY_ID, TAG_ID) VALUES ('et16', 'type008', 'ap001', 'tag_admin');
+INSERT INTO DICT_ENTRY_TAG (ID, TYPE_ID, ENTRY_ID, TAG_ID) VALUES ('et17', 'type008', 'ap001', 'tag_dev');
+INSERT INTO DICT_ENTRY_TAG (ID, TYPE_ID, ENTRY_ID, TAG_ID) VALUES ('et18', 'type008', 'ap002', 'tag_admin');
+INSERT INTO DICT_ENTRY_TAG (ID, TYPE_ID, ENTRY_ID, TAG_ID) VALUES ('et19', 'type008', 'ap002', 'tag_dev');
+INSERT INTO DICT_ENTRY_TAG (ID, TYPE_ID, ENTRY_ID, TAG_ID) VALUES ('et20', 'type008', 'ap003', 'tag_viewer');
+INSERT INTO DICT_ENTRY_TAG (ID, TYPE_ID, ENTRY_ID, TAG_ID) VALUES ('et21', 'type008', 'ap004', 'tag_dev');
+INSERT INTO DICT_ENTRY_TAG (ID, TYPE_ID, ENTRY_ID, TAG_ID) VALUES ('et22', 'type009', 'ts001', 'tag004');
+INSERT INTO DICT_ENTRY_TAG (ID, TYPE_ID, ENTRY_ID, TAG_ID) VALUES ('et23', 'type010', 'tc001', 'tag001');
+
+COMMIT;
