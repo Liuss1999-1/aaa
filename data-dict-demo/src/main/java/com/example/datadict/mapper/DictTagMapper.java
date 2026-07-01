@@ -20,7 +20,7 @@ public interface DictTagMapper {
     @Select("SELECT * FROM DICT_TAG WHERE ID = #{id}")
     DictTag findById(String id);
 
-    @Insert("INSERT INTO DICT_TAG (ID, TAG_NAME, CREATED_AT) VALUES (#{id}, #{tagName}, CURRENT_TIMESTAMP)")
+    @Insert("INSERT INTO DICT_TAG (ID, TAG_NAME) VALUES (#{id}, #{tagName})")
     int insert(DictTag tag);
 
     @Update("UPDATE DICT_TAG SET TAG_NAME = #{tagName} WHERE ID = #{id}")

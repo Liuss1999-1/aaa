@@ -166,7 +166,11 @@ public class DictServiceImpl implements DictService {
 
         String id = UUID.randomUUID().toString().replace("-", "");
 
-        Map<String, Object> params = buildDataParams(type.getTableName(), id, req.getEntryName(), fields, req.getFields());
+        // Auto-sync entryName from first non-null field value if caller didn't provide one.
+        // This avoids maintaining entryName separately when it mirrors a field like label/name.
+        String entryName = resolveEntryName(req, fields, true);
+
+        Map<String, Object> params = buildDataParams(type.getTableName(), id, entryName, fields, req.getFields());
         params.put("fieldMappings", fields);
         dynamicMapper.insert(params);
 
@@ -176,7 +180,7 @@ public class DictServiceImpl implements DictService {
             }
         }
 
-        return buildEntry(type, id, req.getEntryName(), fields, req.getFields());
+        return buildEntry(type, id, entryName, fields, req.getFields());
     }
 
     @Override
@@ -190,8 +194,19 @@ public class DictServiceImpl implements DictService {
         validateFields(req.getFields(), fields, false);
         validateFieldTypes(req.getFields(), fields);
 
-        Map<String, Object> params = buildDataParams(type.getTableName(), req.getId(), req.getEntryName(), fields, req.getFields());
-        params.put("fieldMappings", fields);
+        // Update entryName from fields if provided (label changed → entryName follows)
+        String entryName = resolveEntryName(req, fields, false);
+        // If entryName is empty from the resolve call (not explicitly provided),
+        // fall back to reading the current entryName from DB to preserve it
+        if (entryName == null || entryName.isBlank()) {
+            Map<String, Object> row = readSingleRow(type.getTableName(), req.getId(), fields);
+            if (row != null) {
+                entryName = String.valueOf(row.getOrDefault("ENTRY_NAME", ""));
+            }
+        }
+
+        // Only update columns that appear in the request — don't nullify unmentioned fields.
+        Map<String, Object> params = buildUpdateParams(type.getTableName(), req.getId(), entryName, fields, req.getFields());
 
         int updated = dynamicMapper.update(params);
         if (updated == 0) {
@@ -205,7 +220,7 @@ public class DictServiceImpl implements DictService {
             }
         }
 
-        return buildEntry(type, req.getId(), req.getEntryName(), fields, req.getFields());
+        return buildEntry(type, req.getId(), entryName, fields, req.getFields());
     }
 
     @Override
@@ -323,6 +338,78 @@ public class DictServiceImpl implements DictService {
             throw BusinessException.notFound("DictType", typeCode);
         }
         return type;
+    }
+
+    /**
+     * Read a single row from a physical table. Used to read current entryName
+     * on update to avoid overwriting it when the caller didn't provide one.
+     */
+    private Map<String, Object> readSingleRow(String tableName, String id, List<DictField> fields) {
+        Map<String, Object> params = new HashMap<>();
+        params.put("tableName", tableName);
+        params.put("id", id);
+        params.put("fieldMappings", fields);
+        return dynamicMapper.findById(params);
+    }
+
+    /**
+     * Resolve entryName: use the value provided, or auto-derive from
+     * the first non-null TEXT/NUMBER field value (create only).
+     * For updates, return null if not provided so caller can preserve old value.
+     */
+    private String resolveEntryName(EntrySaveRequest req, List<DictField> fields, boolean isCreate) {
+        if (req.getEntryName() != null && !req.getEntryName().isBlank()) {
+            return req.getEntryName();
+        }
+        if (!isCreate) {
+            return req.getEntryName(); // update: return null if not provided, caller will handle
+        }
+        // create: auto-derive from name, label, value, or first non-null field
+        String[] fallbackKeys = {"name", "label", "value"};
+        Map<String, Object> fd = req.getFields();
+        for (String key : fallbackKeys) {
+            Object v = fd.get(key);
+            if (v != null && !String.valueOf(v).isEmpty()) {
+                return String.valueOf(v);
+            }
+        }
+        // Last resort: first non-null field value
+        for (DictField f : fields) {
+            Object v = fd.get(f.getFieldCode());
+            if (v != null && !String.valueOf(v).isEmpty()) {
+                return String.valueOf(v);
+            }
+        }
+        throw BusinessException.badRequest("entryName must be provided or derivable from fields (name/label/value)");
+    }
+
+    /**
+     * Build params map for UPDATE — only includes columns whose fieldCode
+     * appears in the request, so unmentioned fields are NOT nullified.
+     */
+    private Map<String, Object> buildUpdateParams(String tableName, String id, String entryName,
+                                                   List<DictField> fields, Map<String, Object> fieldData) {
+        Map<String, Object> params = new LinkedHashMap<>();
+        params.put("tableName", tableName);
+        params.put("id", id);
+        params.put("entryName", entryName);
+        params.put("dbType", detectDbType());
+        // Only include DICT_FIELD entries whose fieldCode is in the request
+        List<DictField> touchedFields = new ArrayList<>();
+        if (fields != null && fieldData != null) {
+            for (DictField f : fields) {
+                if (fieldData.containsKey(f.getFieldCode())) {
+                    Object val = fieldData.get(f.getFieldCode());
+                    if ("NUMBER".equalsIgnoreCase(f.getFieldType()) && val instanceof String) {
+                        val = new java.math.BigDecimal((String) val);
+                    }
+                    params.put(f.getColumnName(), val);
+                    touchedFields.add(f);
+                }
+            }
+        }
+        params.put("fieldMappings", touchedFields);
+        return params;
     }
 
     /**

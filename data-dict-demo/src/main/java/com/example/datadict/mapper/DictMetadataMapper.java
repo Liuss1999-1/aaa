@@ -23,11 +23,11 @@ public interface DictMetadataMapper {
     @Select("SELECT * FROM DICT_TYPE ORDER BY CREATED_AT DESC")
     List<DictType> listTypes();
 
-    @Insert("INSERT INTO DICT_TYPE (ID, TYPE_CODE, TYPE_NAME, TABLE_NAME, CREATED_AT, UPDATED_AT) " +
-            "VALUES (#{id}, #{typeCode}, #{typeName}, #{tableName}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)")
+    @Insert("INSERT INTO DICT_TYPE (ID, TYPE_CODE, TYPE_NAME, TABLE_NAME) " +
+            "VALUES (#{id}, #{typeCode}, #{typeName}, #{tableName})")
     int insertType(DictType type);
 
-    @Update("UPDATE DICT_TYPE SET TYPE_NAME = #{typeName}, TABLE_NAME = #{tableName}, UPDATED_AT = CURRENT_TIMESTAMP WHERE ID = #{id}")
+    @Update("UPDATE DICT_TYPE SET TYPE_NAME = #{typeName}, TABLE_NAME = #{tableName} WHERE ID = #{id}")
     int updateType(DictType type);
 
     @Delete("DELETE FROM DICT_TYPE WHERE TYPE_CODE = #{typeCode}")
@@ -44,8 +44,8 @@ public interface DictMetadataMapper {
     @Select("SELECT * FROM DICT_FIELD WHERE ID = #{id}")
     DictField findFieldById(String id);
 
-    @Insert("INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED, CREATED_AT) " +
-            "VALUES (#{id}, #{typeId}, #{fieldCode}, #{fieldName}, #{fieldType}, #{columnName}, #{sortOrder}, #{isRequired}, CURRENT_TIMESTAMP)")
+    @Insert("INSERT INTO DICT_FIELD (ID, TYPE_ID, FIELD_CODE, FIELD_NAME, FIELD_TYPE, COLUMN_NAME, SORT_ORDER, IS_REQUIRED) " +
+            "VALUES (#{id}, #{typeId}, #{fieldCode}, #{fieldName}, #{fieldType}, #{columnName}, #{sortOrder}, #{isRequired})")
     int insertField(DictField field);
 
     @Update("UPDATE DICT_FIELD SET FIELD_NAME = #{fieldName}, FIELD_TYPE = #{fieldType}, COLUMN_NAME = #{columnName}, " +

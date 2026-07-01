@@ -19,8 +19,7 @@ public class EntrySaveRequest {
     @Schema(description = "Dictionary type code", example = "PRODUCT")
     private String typeCode;
 
-    @NotBlank(message = "entryName must not be blank")
-    @Schema(description = "Entry name", example = "iPhone 15")
+    @Schema(description = "Entry name (display title). Automatically derived from 'name'/'label' first field value if omitted.", example = "iPhone 15")
     private String entryName;
 
     @NotNull(message = "fields must not be null")
